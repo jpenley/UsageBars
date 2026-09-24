@@ -1,0 +1,198 @@
+{
+  // ---------------------------------------------------------------------------
+  // UsageBars settings. Edit and restart UsageBars.exe to apply.
+  // Comments and trailing commas are tolerated here.
+  //
+  // Out-of-range values are clamped at load rather than rejected; whatever was
+  // corrected is listed under "config adjustments" in Copy diagnostics.
+  // ---------------------------------------------------------------------------
+
+  // --- Providers --------------------------------------------------------------
+
+  // Show the Claude pill on Claude Desktop and on terminals running Claude Code.
+  "EnableClaude": true,
+
+  // Show the Codex pill on the Codex/ChatGPT desktop window and on terminals
+  // running the Codex CLI. Reads the signed-in Codex app-server directly, so
+  // there is nothing to configure beyond having Codex installed.
+  "EnableCodex": true,
+
+  // How often to poll the Codex app-server. Cheap: it is a local JSON-RPC call,
+  // and the server also pushes updates in between polls.
+  "CodexRefreshMinutes": 2,
+
+  // --- Reset times ------------------------------------------------------------
+
+  // Reset deadlines are MEASURED, not configured:
+  //   Codex  - the app-server reports a real resetsAt for every window.
+  //   Claude - derived from plan-usage-history.json's own sample series. A reset
+  //            shows up as utilization dropping to zero; the window closes 5h/7d
+  //            after usage resumed.
+  //   Scrape - parsed from the /usage meter's own line ("Expires October 14").
+  //
+  // When none of those is available the tooltip says so rather than guessing.
+  // The two settings below are only a fallback, and are off by default because a
+  // confident wrong date is worse than "unknown".
+  "UseConfiguredResetDay": false,
+  "ResetDayOfWeek": "Friday",
+  "ResetHour": 0,
+
+  // --- When the "+" (request more credit) icon appears ------------------------
+
+  // Primary trigger: show "+" when usage is projected to run out within this
+  // many hours at the recent burn rate.
+  "WarnHoursToEmpty": 2,
+
+  // Safety margin on the measured rate. 1.25 assumes you'll burn 25% faster
+  // than recent history suggests, so the warning arrives early, not late.
+  "VelocityPaddingFactor": 1.25,
+
+  // Absolute floor: always warn at or below this remaining percent, even if the
+  // burn rate says there's plenty of time (e.g. you've stopped for the day).
+  "LowThresholdPct": 10,
+
+  // --- Burn-rate measurement --------------------------------------------------
+
+  // How far back to look when measuring the current rate.
+  "VelocityWindowHours": 3,
+
+  // Minimum samples / elapsed time before a rate is trusted. Below these, the
+  // "+" falls back to LowThresholdPct alone.
+  "MinVelocitySamples": 3,
+  "MinVelocitySpanMinutes": 20,
+
+  // --- Bar colours ------------------------------------------------------------
+
+  // Remaining percentage at or below which a bar turns amber, and below which it
+  // turns red. Red is clamped so it can never exceed amber.
+  "AmberAtPercent": 50,
+  "RedAtPercent": 20,
+
+  // --- Freshness --------------------------------------------------------------
+
+  // plan-usage-history.json older than this is drawn dimmed.
+  "FileStaleMinutes": 15,
+
+  // A scraped or app-server reading older than this is drawn dimmed.
+  "ReadingStaleHours": 2,
+
+  // --- Claude data source -----------------------------------------------------
+
+  // How often to re-read Claude Code's /usage screen. Each read runs a hidden
+  // Claude Code session for ~20s, so keep this generous. Only used when
+  // plan-usage-history.json has no values (usage-based and enterprise seats).
+  // Repeated failures back off exponentially, capped at this interval.
+  "ScrapeIntervalMinutes": 15,
+
+  // false = only use plan-usage-history.json, never launch Claude Code.
+  "UseClaudeCodeFallback": true,
+
+  // --- Where the pills appear -------------------------------------------------
+
+  // true  = stay on screen even when the host window isn't focused, so you can
+  //         watch usage while working in another app.
+  // false = only show while the host window is active.
+  "AlwaysOn": true,
+
+  // How a pill is kept above its host:
+  //   "auto"    - prefer making the pill an OWNED window of the host, so the
+  //               window manager keeps it directly above that one window and
+  //               occludes it naturally. Falls back to inserting the pill just
+  //               above the host in the z-order, then to topmost + occlusion.
+  //   "zorder"  - skip ownership, insert just above the host.
+  //   "topmost" - always-on-top plus an explicit occlusion test.
+  // Only pin a mode if a particular host misbehaves; "auto" is almost always right.
+  "PlacementMode": "auto",
+
+  // Only consulted in "topmost" mode, where visibility has to be worked out by
+  // hand: hide a pill when another window covers that patch of screen, so it
+  // never floats over unrelated apps. In the other modes the window manager
+  // already does this, and the setting is ignored.
+  "HideWhenCovered": true,
+
+  // FIRST-RUN SEED INPUTS ONLY. When targets.json does not exist, these values
+  // seed the initial terminal targets. After that, use Targets > Manage targets:
+  // changing this config field does not rewrite or re-enable saved targets.
+  "AttachToClaudeCodeTerminals": true,
+  // FIRST-RUN SEED INPUT ONLY; see AttachToClaudeCodeTerminals above.
+  "AttachToCodexTerminals": true,
+
+  // CAPTURE-TIME DETECTION HINTS. Whenever Add captures a new terminal window,
+  // these patterns can help infer Claude or Codex for the draft. They are not
+  // stored as version-3 title conditions and never act as live provider-
+  // activation rules; changing them affects future capture suggestions only.
+  //
+  // Kept specific on purpose: a bare "claude" or "codex" also matches any
+  // terminal whose title merely contains the word — e.g. a shell sitting in a
+  // folder of that name — which makes the pill jump to an unrelated window.
+  //
+  // The leading character class covers the braille block as well as the "✳",
+  // because Claude Code animates the terminal title with a braille spinner
+  // while it is working ("⠐ Access previous session ..."). Matching only "✳"
+  // made detection flap for as long as a task was running.
+  //
+  // The Codex CLI sets no terminal title at all, so its pattern rarely provides
+  // capture-time evidence; Codex terminals are normally detected by process ancestry.
+  "TerminalTitlePattern": "(?i)^\\s*[✳⠀-⣿]|\\bclaude code\\b|^\\s*claude\\s*$",
+  "CodexTitlePattern": "(?i)^\\s*codex\\b|\\bcodex\\s+(?:cli|session)\\b",
+
+  // --- Action icons -----------------------------------------------------------
+
+  // Where the Claude "+" icon sends you when the meter runs low. Must be
+  // http(s). Empty by default: there is no universal "get more credit" page,
+  // and no icon is drawn unless you set this.
+  "RequestCreditUrl": "",
+
+  // Windows domain whose members are offered the "+" icon at all. "" = no
+  // restriction.
+  //
+  // Useful when RequestCreditUrl is an internal page that only resolves inside
+  // a company network, since this is a portable exe that travels. Users off
+  // that domain still get the red bar and the warning — they are just not
+  // offered a link that would go nowhere for them. Matches either the NetBIOS
+  // domain (CONTOSO) or any label of the DNS domain (corp.contoso.com); a
+  // non-domain-joined machine never matches.
+  "RequestCreditDomain": "",
+
+  // Where the Codex "+" icon sends you. Empty by default: there is no universal
+  // "get more Codex quota" page, and no icon is drawn unless you set this.
+  "CodexRequestCreditUrl": "",
+
+  // --- Placement --------------------------------------------------------------
+
+  // Every saved target owns its anchor and X/Y offsets in targets.json. New
+  // desktop, terminal, and IDE targets default to Top center, Top right, and
+  // Bottom center respectively; adjust them in the target editor.
+
+  // Height of the host's title bar in logical pixels; a pill centres within it.
+  "TitleBarHeight": 40,
+
+  // Space kept clear at the right of the title bar for the host's own window
+  // controls. A pill centres in what's left, and hides entirely when that isn't
+  // wide enough to hold it.
+  "RightReservePx": 160,
+
+  // FIRST-RUN SEED INPUT ONLY. This chooses the activation mode for initial
+  // Rider/VS Code targets when targets.json is first created; edit those saved
+  // targets in Targets > Manage targets thereafter.
+  //
+  // On by default. An IDE offers too many routes to a provider — an integrated
+  // terminal tab, an AI assistant, a run configuration, an external tool — for
+  // "is a CLI process descended from it right this instant" to be a useful
+  // question; the answer flickers, and most of the time it is no even while you
+  // are using one. The budgets are the account's, not any session's, so if the
+  // IDE is open both are shown.
+  //
+  // Only the MAIN FRAME qualifies, never dialogs, popups or the hidden helper
+  // windows both products keep around — they have no status bar for a pill to
+  // sit on. EnableClaude / EnableCodex stay live, so a provider you have turned
+  // off never appears here. After first run, edit saved target activation instead.
+  "AlwaysShowOnIdes": true,
+
+  // --- Diagnostics ------------------------------------------------------------
+
+  // Keep a rotating JSONL log under UsageBars.data\diagnostics (1 MB x 3).
+  // Only state changes are written, and secret-shaped values and your profile
+  // path are redacted before anything reaches disk.
+  "WriteDiagnosticsLog": true
+}
