@@ -401,7 +401,7 @@ internal static class UsageVelocity
     }
 
     /// <summary>
-    /// Decides whether to surface the request-credit icon. The velocity projection is the primary
+    /// Decides whether the diagnostic low-usage estimate warns. The velocity projection is the primary
     /// trigger; <see cref="Config.LowThresholdPct"/> stays on as an absolute floor so a nearly
     /// empty meter still warns even when usage has gone quiet.
     /// </summary>

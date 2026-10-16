@@ -210,6 +210,7 @@ internal sealed class OverlayController : IDisposable
             }
             BeginFileRead(force: false);
             BeginScrape(force: false);
+            foreach (var pill in _pills.Values) pill.RefreshTime();
         };
         _dataTimer.Start();
 
@@ -353,8 +354,8 @@ internal sealed class OverlayController : IDisposable
         var url = pill.Model.ActionUrl;
         if (string.IsNullOrWhiteSpace(url)) return;
 
-        // Only ever http(s): the URL comes from a config file, and handing an arbitrary scheme to
-        // the shell would make that file a way to launch anything.
+        // Install documentation is the only pill action. Keep the scheme check at the shell
+        // boundary so a future caller cannot turn an action into arbitrary process execution.
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)
             || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
         {
@@ -717,24 +718,23 @@ internal sealed class OverlayController : IDisposable
                     snapshot.HasValues ? "read" : "empty",
                     snapshot.Error is null ? DiagLevel.Info : DiagLevel.Warn,
                     snapshot.Error is null ? "succeeded" : "failed",
-                    snapshot.Error ?? $"{snapshot.SourceLabel}: 5h={snapshot.FiveHourUsedPct} 7d={snapshot.SevenDayUsedPct}");
+                    snapshot.Error ?? $"{snapshot.SourceLabel}: 5h={snapshot.FiveHourUsedPct} 7d={snapshot.SevenDayUsedPct}; sampleAt={snapshot.SampleTime:O}");
 
                 Rebuild();
 
-                // Only now, and only if the file genuinely has nothing to offer.
-                if (firstRead && !snapshot.HasValues) BeginScrape(force: true);
+                // A frozen Desktop file must not prevent a fresh all-device reading.
+                if (UsageModel.NeedsClaudeFallback(snapshot, _config)) BeginScrape(force: firstRead);
             });
         });
     }
 
     /// <summary>
-    /// Scrapes Claude Code's /usage screen. Skipped entirely while the local file has values,
-    /// since that source is free and fresher.
+    /// Scrapes Claude Code's /usage screen when the local file is empty or stale.
     /// </summary>
     private void BeginScrape(bool force)
     {
         if (!_config.EnableClaude || !_config.UseClaudeCodeFallback || _scrapeInFlight) return;
-        if (!_fileReadCompleted || _file.HasValues) return;
+        if (!_fileReadCompleted || !UsageModel.NeedsClaudeFallback(_file, _config)) return;
 
         var interval = TimeSpan.FromMinutes(Math.Max(1, _config.ScrapeIntervalMinutes));
 
@@ -770,13 +770,15 @@ internal sealed class OverlayController : IDisposable
                 {
                     _scrapeFailures = 0;
                     _scraped = result;
-                    if (_history.Record(result.UsedPct!.Value, result.MeterLabel, result.MeterDetail,
+                    if (result.Windows.Count == 0 && _history.Record(result.UsedPct!.Value, result.MeterLabel, result.MeterDetail,
                             result.ReadAt ?? DateTimeOffset.Now))
                     {
                         _history.Save();
                     }
                     _log.Record("claude", "usage-scrape", "read", DiagLevel.Info, "succeeded",
-                        $"{result.MeterLabel}: {result.UsedPct}% used", elapsedMs);
+                        result.Windows.Count > 0
+                            ? string.Join(", ", result.Windows.Select(w => $"{w.Label}: {w.UsedPct}% used")) + $"; readAt={result.ReadAt:O}"
+                            : $"{result.MeterLabel}: {result.UsedPct}% used; readAt={result.ReadAt:O}", elapsedMs);
                 }
                 else
                 {
@@ -1010,10 +1012,7 @@ internal sealed class OverlayController : IDisposable
                         $" · registered={Redact.Paths(_startup.RegisteredCommand() ?? "(none)")}");
         text.AppendLine($"titleBarHeight : {_config.TitleBarHeight} · rightReserve={_config.RightReservePx}");
         text.AppendLine($"IDE activation : alwaysShowOnIdes={_config.AlwaysShowOnIdes} · status heights=per-target measurement");
-        text.AppendLine($"thresholds     : amber<={_config.AmberAtPercent}% red<{_config.RedAtPercent}% floor={_config.LowThresholdPct}%");
-        text.AppendLine($"user domain    : {UserDomain.Describe()}");
-        text.AppendLine($"credit icon    : requires domain '{(_config.RequestCreditDomain is { Length: > 0 } d ? d : "(any)")}' — " +
-                        $"{(UserDomain.Matches(_config.RequestCreditDomain) ? "offered" : "withheld (warning still shown as a red bar)")}");
+        text.AppendLine($"pace colours   : yellow +/-{ResetPace.YellowRadius} points; full red/green at +/-{ResetPace.FullColorDistance} points");
         if (_config.Adjustments.Count > 0)
         {
             text.AppendLine("config adjustments (values clamped at load):");

@@ -85,8 +85,6 @@ public class DefaultConfigTests
         // Spot-checks the values most likely to drift between the file and the code.
         Assert.Equal(builtIn.TitleBarHeight, shipped.TitleBarHeight);
         Assert.Equal(builtIn.RightReservePx, shipped.RightReservePx);
-        Assert.Equal(builtIn.AmberAtPercent, shipped.AmberAtPercent);
-        Assert.Equal(builtIn.RedAtPercent, shipped.RedAtPercent);
         Assert.Equal(builtIn.LowThresholdPct, shipped.LowThresholdPct);
         Assert.Equal(builtIn.CodexRefreshMinutes, shipped.CodexRefreshMinutes);
         Assert.Equal(builtIn.UseConfiguredResetDay, shipped.UseConfiguredResetDay);

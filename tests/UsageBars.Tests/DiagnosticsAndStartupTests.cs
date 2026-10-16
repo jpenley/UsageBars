@@ -160,12 +160,22 @@ public class DiagnosticLogTests : IDisposable
     private static void WaitForLines(string path, int atLeast)
     {
         // The writer is asynchronous by design; poll rather than sleep a fixed amount.
+        // A read-only sharing mode can block its next append and make it drop an event.
         var deadline = DateTime.UtcNow.AddSeconds(5);
+        var observed = 0;
         while (DateTime.UtcNow < deadline)
         {
-            if (File.Exists(path) && File.ReadAllLines(path).Length >= atLeast) return;
+            if (File.Exists(path))
+            {
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                // Count completed lines, so a partial final append cannot satisfy the wait.
+                observed = reader.ReadToEnd().Count(c => c == '\n');
+                if (observed >= atLeast) return;
+            }
             Thread.Sleep(25);
         }
+        throw new TimeoutException($"Expected {atLeast} completed log lines; observed {observed}.");
     }
 
     [Fact]

@@ -41,9 +41,7 @@ internal sealed class Config
     public double ScrapeIntervalMinutes { get; set; } = 15;
 
     /// <summary>
-    /// Absolute floor: the "+" icon always appears at or below this remaining percentage, even
-    /// when the burn rate says there's plenty of time. The primary trigger is the velocity
-    /// projection below.
+    /// Absolute floor for the diagnostic low-usage estimate. Pill colours use reset pace.
     /// </summary>
     public double LowThresholdPct { get; set; } = 10;
 
@@ -86,32 +84,8 @@ internal sealed class Config
     /// </summary>
     public bool UseConfiguredResetDay { get; set; }
 
-    /// <summary>
-    /// Where the Claude "+" icon points when the meter runs low. Empty by default, for the same
-    /// reason as <see cref="CodexRequestCreditUrl"/>: there is no universal "get more credit"
-    /// page, so no icon is drawn unless one is configured locally.
-    /// </summary>
-    public string RequestCreditUrl { get; set; } = "";
-
-    /// <summary>
-    /// Windows domain whose members see the "+" request-credit icon at all. Empty = no restriction.
-    ///
-    /// For a <see cref="RequestCreditUrl"/> that only resolves inside a company network: this is a
-    /// portable exe that travels, and off-domain users still get the red bar and the warning —
-    /// they just aren't offered a link that would go nowhere for them.
-    /// </summary>
-    public string RequestCreditDomain { get; set; } = "";
-
     /// <summary>Set false to rely only on plan-usage-history.json and never launch Claude Code.</summary>
     public bool UseClaudeCodeFallback { get; set; } = true;
-
-    // --- Bar colours ------------------------------------------------------------
-
-    /// <summary>Remaining percentage at or below which a bar turns amber.</summary>
-    public double AmberAtPercent { get; set; } = 50;
-
-    /// <summary>Remaining percentage below which a bar turns red. Clamped to never exceed amber.</summary>
-    public double RedAtPercent { get; set; } = 20;
 
     // --- Providers --------------------------------------------------------------
 
@@ -141,13 +115,6 @@ internal sealed class Config
     /// "codex", a build log, a git branch — and makes the pill jump to an unrelated window.
     /// </summary>
     public string CodexTitlePattern { get; set; } = @"(?i)^\s*codex\b|\bcodex\s+(?:cli|session)\b";
-
-    /// <summary>
-    /// Where the Codex pill's action icon points when the meter runs low. Empty by default: there
-    /// is no universal "get more Codex quota" page, and an icon that leads nowhere is worse than
-    /// no icon, so none is drawn unless you set this.
-    /// </summary>
-    public string CodexRequestCreditUrl { get; set; } = "";
 
     // --- Freshness --------------------------------------------------------------
 
@@ -263,8 +230,7 @@ internal sealed class Config
     /// The file is meant to be edited by hand, so it will contain typos. Every consumer treating
     /// each field defensively would be worse than one pass here: a zero
     /// <see cref="MinVelocitySamples"/> makes the projection trust a single reading, a negative
-    /// <see cref="TitleBarHeight"/> puts the pill off-screen, and a <see cref="RedAtPercent"/>
-    /// above <see cref="AmberAtPercent"/> makes the colour ramp run backwards. Records what it
+    /// <see cref="TitleBarHeight"/> puts the pill off-screen. Records what it
     /// changed so the diagnostics dump can explain a value that isn't what the file says.
     /// </summary>
     public void Normalize()
@@ -313,17 +279,6 @@ internal sealed class Config
             v => MinVelocitySpanMinutes = v);
         ClampInt(nameof(ResetHour), ResetHour, 0, 23, v => ResetHour = v);
 
-        ClampDouble(nameof(AmberAtPercent), AmberAtPercent, 0, 100, v => AmberAtPercent = v);
-        ClampDouble(nameof(RedAtPercent), RedAtPercent, 0, 100, v => RedAtPercent = v);
-
-        // Red is the more severe band, so it has to sit at or below amber. Lowering red rather
-        // than raising amber keeps the user's "warn me early" intent if they only set one.
-        if (RedAtPercent > AmberAtPercent)
-        {
-            notes.Add($"{nameof(RedAtPercent)} {Fmt(RedAtPercent)} -> {Fmt(AmberAtPercent)} (cannot exceed {nameof(AmberAtPercent)})");
-            RedAtPercent = AmberAtPercent;
-        }
-
         if (!IsValidRegex(TerminalTitlePattern))
         {
             notes.Add($"{nameof(TerminalTitlePattern)} is not a valid regex; using the default");
@@ -345,12 +300,6 @@ internal sealed class Config
         else
         {
             PlacementMode = placement;
-        }
-
-        if (!string.IsNullOrWhiteSpace(RequestCreditUrl) && !IsHttpUrl(RequestCreditUrl))
-        {
-            notes.Add($"{nameof(RequestCreditUrl)} is not an http(s) URL; no icon will be offered");
-            RequestCreditUrl = "";
         }
 
         Adjustments = notes;
@@ -376,14 +325,6 @@ internal sealed class Config
             return false;
         }
     }
-
-    /// <summary>
-    /// The action icon opens this with UseShellExecute, so anything other than http(s) would hand
-    /// an arbitrary scheme to the shell from a file on disk.
-    /// </summary>
-    private static bool IsHttpUrl(string url) =>
-        Uri.TryCreate(url, UriKind.Absolute, out var uri)
-        && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
 
     public void Save()
     {

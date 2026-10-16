@@ -143,6 +143,57 @@ internal static class ResetEstimator
         return null;
     }
 
+    /// <summary>
+    /// Parses the dated clock time and optional IANA zone on a Claude rolling-window reset.
+    /// Resolve it at the sample time, so a cached "Resets 3pm" never rolls forward on a repaint.
+    /// Unsupported text or an ambiguous daylight-saving time stays unknown.
+    /// </summary>
+    public static DateTimeOffset? ParseWindowReset(string? detail, DateTimeOffset observedAt, TimeSpan windowDuration)
+    {
+        if (string.IsNullOrWhiteSpace(detail) || windowDuration <= TimeSpan.Zero) return null;
+        var match = Regex.Match(detail,
+            @"^\s*resets?\s+(?:(?:on|at)\s+)?(?:(?<month>[A-Za-z]{3,9})\s+(?<day>[0-9]{1,2})\s*,?\s+)?(?<hour>[0-9]{1,2})(?::(?<minute>[0-9]{2}))?\s*(?<meridiem>am|pm)?\s*(?:\((?<zone>[^)]+)\))?\s*$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return null;
+        try
+        {
+            var zone = match.Groups["zone"].Success
+                ? TimeZoneInfo.FindSystemTimeZoneById(match.Groups["zone"].Value.Trim())
+                : TimeZoneInfo.Local;
+            var localNow = TimeZoneInfo.ConvertTime(observedAt, zone);
+            var hour = int.Parse(match.Groups["hour"].Value, CultureInfo.InvariantCulture);
+            var minute = match.Groups["minute"].Success
+                ? int.Parse(match.Groups["minute"].Value, CultureInfo.InvariantCulture) : 0;
+            var meridiem = match.Groups["meridiem"].Value.ToLowerInvariant();
+            if (minute > 59 || (meridiem.Length > 0 && hour is < 1 or > 12) || hour > 23) return null;
+            if (meridiem == "pm" && hour < 12) hour += 12;
+            if (meridiem == "am" && hour == 12) hour = 0;
+
+            var hasDate = match.Groups["month"].Success;
+            var month = localNow.Month;
+            var day = localNow.Day;
+            if (hasDate)
+            {
+                if (!TryMonth(match.Groups["month"].Value, out month)) return null;
+                day = int.Parse(match.Groups["day"].Value, CultureInfo.InvariantCulture);
+            }
+            var candidate = new DateTime(localNow.Year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+            // The CLI rounds to minutes and timestamps a read after the panel settles. A reset
+            // crossed during that read is expired, not tomorrow's (or next year's) fresh budget.
+            // Resolve a genuinely future occurrence only when it fits the provider's window.
+            if (candidate < localNow.DateTime.AddMinutes(-1))
+            {
+                var next = hasDate ? candidate.AddYears(1) : candidate.AddDays(1);
+                if (next - localNow.DateTime <= windowDuration) candidate = next;
+            }
+            if (zone.IsInvalidTime(candidate) || zone.IsAmbiguousTime(candidate)) return null;
+            return new DateTimeOffset(candidate, zone.GetUtcOffset(candidate));
+        }
+        catch (TimeZoneNotFoundException) { return null; }
+        catch (InvalidTimeZoneException) { return null; }
+        catch (ArgumentException) { return null; }
+    }
+
     private static bool TryBuildTime(Match match, DateTimeOffset now, out DateTimeOffset result)
     {
         result = default;

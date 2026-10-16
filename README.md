@@ -9,8 +9,8 @@ Codex / ChatGPT    7d ▰▰▰▰▰ 91%
 ```
 
 Each provider gets its own pill on its own window, so both can be on screen at once. The bars show
-what's **left**, not what's used: full and green is good. Amber at or below 50 %, red below 20 %
-(both configurable). When Claude gets low a **+** appears — click it to request more credit.
+what's **left**, not what's used. A triangle marks the time remaining until reset. The fill
+changes smoothly from red below the triangle, through yellow near it, to green above it.
 
 ## Running it
 
@@ -113,9 +113,8 @@ generation.
 
 Beyond the bars, the response also carries the plan type, any spend-control budget (drawn as a
 `spend` bar, the Codex analogue of Claude's credit meter), per-model metering buckets and the
-number of redeemable rate-limit reset credits. Those appear in the tray tooltip and diagnostics.
-UsageBars will **not** redeem a reset credit for you — that's an account action, so it only tells
-you one is available.
+number of redeemable rate-limit reset credits. Per-model and reset-credit metadata remain in
+diagnostics. The tray shows current remaining percentages.
 
 ### Claude — two sources, in priority order. The first that has data wins.
 
@@ -169,7 +168,7 @@ keeps working and just relabels itself (`credit` → `spend`).
 Because each scrape spins a hidden Claude Code session for ~20 seconds, it runs **every 15
 minutes** (configurable), and the last good reading is cached so the pill shows a number
 immediately on start. Repeated failures back off exponentially rather than re-running a 20-second
-session on the normal cadence. Scraping is skipped entirely whenever source 1 has values.
+session on the normal cadence. Scraping is skipped while source 1 has fresh values.
 
 The meter's own second line is parsed for a deadline — "One-time credit · Expires October 14",
 "Resets 3pm" — since there is no sample history behind a scrape to derive one from.
@@ -628,136 +627,50 @@ one's width plus a small gap.
 The markers appear **only** while a host is shared. A pill alone on a window is unambiguous — it is
 the only one there — so a marker would be noise.
 
-## The action icon
+## Reset pointer and pace colors
 
-| Icon | When | Links to |
-|---|---|---|
-| green **+** | Claude projected to run out soon (see below), or remaining at or below `LowThresholdPct` | `RequestCreditUrl` — no **+** is drawn until you set one |
-| amber **!** | the provider's CLI isn't installed | Claude Code / Codex install docs |
+Each timed bar has a small triangle just above its track. The triangle moves from the right
+edge to the left edge as the reset approaches: its position is the percentage of the window
+still remaining. A five-hour window halfway to reset has its triangle at 50%.
 
-When usage is low enough to warn, the bar is drawn red regardless of percentage — a green bar next
-to a warning icon would read as contradictory.
+The whole fill changes color according to the distance between the allowance remaining and
+the triangle:
 
-### Configuring the **+**
+- Yellow within 2 percentage points of the triangle.
+- Smoothly toward red when the allowance falls below the triangle, reaching full red at 15 points below.
+- Smoothly toward green when the allowance extends beyond the triangle, reaching full green at 15 points above.
 
-There is no universal "get more credit" page, so `RequestCreditUrl` is empty by default and no **+**
-is drawn. Set it in your local `UsageBars.config.json` to offer one. Workplace-specific values
-belong there, not in the code defaults.
+This compares consumption with the elapsed fraction of the current window. Each Codex window
+uses the duration reported by the app-server. Claude's windows use five hours and seven days,
+with reset times derived from Desktop history or parsed from the CLI's reported date, time,
+and time zone. The triangle advances every five seconds, even when the usage reading stays the same.
 
-If the link only resolves inside a company network — this is a portable exe that travels — also set
-`RequestCreditDomain` to that Windows domain. The icon is then only offered to users on it: a user
-off that domain isn't offered a link that would go nowhere for them.
+When a reset timestamp or window duration is unknown, the bar has a neutral fill and no triangle.
+A reset that has passed stays at the left edge until a new deadline is reported.
+Hover over a pill to see its reset details and the age of its displayed reading.
 
-**The warning itself is never withheld.** The bar still turns red — colour is keyed on the warning
-state, not on the icon — so a user without the link gets exactly the same alarm. Only the
-request-credit action is gated; the **!** install prompts point at public documentation and always
-appear.
+## Install prompt
 
-Matching accepts either the NetBIOS domain (`CONTOSO`) or any label of the DNS domain
-(`corp.contoso.com`), compared label by label so `notcontoso.com` doesn't match. A machine that
-isn't domain-joined never matches. Leave `RequestCreditDomain` as `""` for no restriction. The
-diagnostics dump reports the current domain and whether the icon is offered or withheld.
+An amber **!** appears when the provider's CLI is missing. Click it to open that CLI's
+installation documentation. Usage bars have no request-credit or request-reset action.
 
-The Codex pill draws no **+** unless you set `CodexRequestCreditUrl`: there is no universal "get
-more Codex quota" page, and an icon that leads nowhere is worse than no icon. If the app-server
-reports redeemable rate-limit reset credits, that's shown in the tray tooltip instead — redeeming
-one is an account action UsageBars won't take for you.
+## Diagnostic history
 
-Action URLs must be `http(s)`. The URL comes from a config file and is opened with
-`UseShellExecute`, so any other scheme would turn that file into a way to launch arbitrary
-programs; a non-http value is replaced with the default at load.
-
-## Velocity: when does "+" appear?
-
-The trigger is a **burn-rate projection**, not a fixed percentage. UsageBars keeps a rolling
-history of readings in `UsageBars.data\usage-history.json`, measures how fast the meter
-is climbing, and warns when you're on track to run out within `WarnHoursToEmpty` (default 2 h):
-
-```
-rate      = (used_now - used_earlier) / hours_between      # over the last VelocityWindowHours
-projected = remaining / (rate x VelocityPaddingFactor)     # padding warns early, not late
-warn      = projected <= WarnHoursToEmpty
-```
-
-So at 40 % remaining and a hard 20 %/h burn you get warned (~1.6 h left), while at 25 % remaining
-and a gentle 1 %/h you don't — which is the point of doing it by velocity rather than a flat line.
-
-Guards, so it never cries wolf on thin data:
-
-- Needs at least `MinVelocitySamples` (3) readings spanning `MinVelocitySpanMinutes` (20 min).
-  Below that, only the floor applies.
-- Flat or **decreasing** usage never projects exhaustion.
-- `LowThresholdPct` (default 10 %) stays on as an absolute floor, so a nearly empty meter warns
-  even if you've stopped working and the rate has gone quiet.
-- A **drop in usage** is treated as a reset/top-up, and history before it is ignored so the old
-  window's rate doesn't contaminate the new one.
-
-### The configured reset day never enters this
-
-`ResetDayOfWeek` is an opt-in fallback for the tooltip only, off by default behind
-`UseConfiguredResetDay`. **It never moves the bar, the rate, or the warning** — the bar always
-comes from measured data, and an actual reset is detected from the data itself.
-`VelocityTests.ConfiguredResetDayNeverAffectsRateOrWarning` asserts that all 168 day/hour
-combinations yield an identical rate, projection and warning.
-
-The **warning** applies to the scraped credit meter only. The file source's 5h/7d windows and every
-Codex window carry their own reset deadline, so those use the static `LowThresholdPct` floor
-instead. The projection below is a separate question and applies to every bar.
-
-## Projected time to 0 %
-
-Under each provider, the tray menu carries a second line saying when each of its bars is on track to
-hit zero at the rate it is currently moving:
-
-```
-Claude: 5h 72% left, 7d 45% left · 5h resets 21:35 (in 4.2 h), 7d resets Thu 6 Aug 09:00 (in 61 h)
-      at this rate: 5h 0% at 18:10 (in 1.4 h), 7d 0% at Fri 7 Aug 02:30 (in 78 h)
-```
-
-Which of the two lands first is the whole point. A window that refills before you empty it needs no
-attention; one that doesn't needs it now, and the reset time alone never told you which you had.
-
-Every bar goes through the same calculation whatever it came from — all three sources reduce to a
-list of `(time, used %)` points, and "when do I run out" shouldn't mean three different sums:
-
-| Bar | Series it measures |
-|---|---|
-| Claude 5h / 7d | `plan-usage-history.json`'s own samples — days of five-minute readings, already on disk |
-| Claude credit meter | the scrape history in `usage-history.json` |
-| Every Codex window | readings UsageBars accumulated itself in `bar-history.json` — see below |
-
-It uses the **measured** rate, not the padded one. `VelocityPaddingFactor` exists to make the
-warning fire early; a clock time is a claim about the world, and printing it 25 % pessimistic would
-only make the menu and the clock disagree.
-
-A bar that can't be projected shows nothing rather than "unknown", under the same guards as the
-warning: fewer than `MinVelocitySamples` readings, spanning less than `MinVelocitySpanMinutes`,
-usage flat or decreasing, or history from before a reset — which is discarded, so the previous
-window's consumption can't inflate the new one's projection. One guard is specific to the
-projection: a rate slow enough to put zero **more than 30 days out** reports nothing at all, because
-a barely-moving meter divides into years and "0 % in 2031" is noise wearing the costume of a
-measurement.
-
-### Codex has to be watched rather than read
-
-The app-server reports a precise current number and a real `resetsAt` — and nothing whatsoever about
-the past, so unlike Claude there is no series to read. UsageBars accumulates one itself in
-`UsageBars.data\bar-history.json`, keeping each window's readings no closer together than 5 minutes:
-the server pushes an update on every request that moves the meter, which is far denser than a rate
-needs and would fill the series with a single busy hour. A drop is always kept regardless of
-spacing, since that is the reset signal everything else keys off.
-
-The practical consequence is worth knowing: **Codex projections are blank for the first several
-minutes of a fresh install.** After that they survive restarts.
+Copy diagnostics includes the measured rates and estimated exhaustion times when enough
+history exists. These estimates do not control the pill colors and do not appear in the tray menu.
+Claude Desktop supplies its own history; scraped meters use `UsageBars.data\usage-history.json`,
+and Codex readings accumulate in `UsageBars.data\bar-history.json`.
 
 ## Tray menu
 
-The top of the menu is read-only status, one block per provider: its bars and their resets, plus an
-indented **at this rate** line with the projected time to 0 % when there is enough history to
-compute one. That line is hidden rather than showing "unknown" when there isn't. Below that are the
-actions:
+The menu starts with **Refresh now** and contains commands only. Current usage remains on
+the pills and in the tray icon's hover text. Reset details remain on pill hover; rates and
+projections are available in diagnostics.
 
-- **Refresh now** — re-read the file, force a fresh scrape, and re-poll Codex (also on left-click)
+- **Refresh now**: immediately re-read the local file and request a Codex poll. Retry the Claude CLI
+  fallback when the file is missing or stale and the fallback is enabled. Also available by
+  left-clicking the tray icon. Refreshing does not change allowance; identical readings keep
+  the same percentages.
 - **Targets → Manage targets...** — open or reactivate the one reusable manager; its **Add** button
   starts window capture
 - **Start with Windows** — registers/removes the per-user Run entry. Ticked only when the entry
@@ -809,9 +722,8 @@ that.
 
 Out-of-range values are **clamped at load** rather than rejected, and whatever was corrected is
 listed under "config adjustments" in the diagnostics dump. So `MinVelocitySamples: 0` becomes `2`
-instead of making the projection trust a single reading, `RedAtPercent` can never exceed
-`AmberAtPercent`, an invalid regex falls back to the default, and a non-`http(s)` action URL is
-replaced.
+instead of making the projection trust a single reading. An invalid regex falls back to the
+default.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -821,14 +733,12 @@ replaced.
 | `UseConfiguredResetDay` | `false` | Fall back to `ResetDayOfWeek` when a reset can't be measured |
 | `ResetDayOfWeek` | `"Friday"` | Fallback reset day. **Display only, and only when the above is on.** |
 | `ResetHour` | `0` | Local hour of the fallback reset. Display only. |
-| `WarnHoursToEmpty` | `2` | Show **+** when projected to run out within this many hours |
+| `WarnHoursToEmpty` | `2` | Diagnostic low-usage estimate horizon in hours |
 | `VelocityPaddingFactor` | `1.25` | Assume you'll burn this much faster than measured |
 | `LowThresholdPct` | `10` | Absolute floor — always warn at or below this remaining % |
 | `VelocityWindowHours` | `3` | How far back to measure the burn rate |
 | `MinVelocitySamples` | `3` | Readings needed before a rate is trusted |
 | `MinVelocitySpanMinutes` | `20` | Time the readings must span before a rate is trusted |
-| `AmberAtPercent` | `50` | Remaining % at or below which a bar turns amber |
-| `RedAtPercent` | `20` | Remaining % below which a bar turns red (clamped to ≤ amber) |
 | `FileStaleMinutes` | `15` | Age at which the file reading is drawn dimmed |
 | `ReadingStaleHours` | `2` | Age at which a scrape or app-server reading is drawn dimmed |
 | `ScrapeIntervalMinutes` | `15` | How often to re-read Claude Code's `/usage`; failures back off |
@@ -839,15 +749,16 @@ replaced.
 | `AttachToCodexTerminals` | `true` | **First-run seed only:** initial Codex terminal targets are enabled |
 | `TerminalTitlePattern` | `"(?i)^\s*[✳⠀-⣿]\|\bclaude code\b\|^\s*claude\s*$"` | **Capture-time hint:** helps infer Claude for each new Add/capture; not persisted as a title/activity rule. The braille block covers Claude's spinner |
 | `CodexTitlePattern` | `"(?i)^\s*codex\b\|\bcodex\s+(?:cli\|session)\b"` | **Capture-time hint:** helps infer Codex for each new Add/capture; not persisted as a title/activity rule. Codex generally uses ancestry because it sets no title |
-| `RequestCreditUrl` | `""` | Where Claude's **+** sends you. Must be `http(s)`. Empty = no icon |
-| `RequestCreditDomain` | `""` | Only members of this Windows domain are offered the **+**. `""` = no restriction |
-| `CodexRequestCreditUrl` | `""` | Where Codex's **+** sends you. Empty = no icon |
 | `TitleBarHeight` | `40` | Strip a pill sits in, in logical pixels |
 | `RightReservePx` | `160` | Space kept clear for the host's window controls |
 | `AlwaysShowOnIdes` | `true` | **First-run seed only:** initial Rider/VS Code targets use always-open rather than session-required activation |
 | `WriteDiagnosticsLog` | `true` | Keep the rotating JSONL event log |
 
-Comments and trailing commas are tolerated. Older configuration files may still contain
+Comments and trailing commas are tolerated. Legacy credit-action settings (`RequestCreditUrl`,
+`RequestCreditDomain`, `CodexRequestCreditUrl`) and absolute color thresholds (`AmberAtPercent`,
+`RedAtPercent`) are ignored and omitted on the next config save.
+
+Older configuration files may still contain
 `OffsetX`, `OffsetY`, `TerminalOffsetY`, `RightAlignOnTerminals`, `PlaceOnIdeStatusBar`, or
 `StatusBarHeightOverride`; these legacy global placement keys are ignored. A later unrelated config
 save writes the current model without them. Per-target anchor, offset, title-condition, and activity-

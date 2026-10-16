@@ -27,14 +27,7 @@ internal sealed class Tray : IDisposable
     };
 
     private readonly NotifyIcon _icon;
-    private readonly ToolStripMenuItem _claudeStatus = new() { Enabled = false };
-    private readonly ToolStripMenuItem _codexStatus = new() { Enabled = false };
     private readonly ToolStripMenuItem _targetSummary = new() { Enabled = false };
-
-    // Hidden until there is a projection to show, rather than displayed saying "unknown": on a
-    // fresh install there is no history behind either provider for the first several minutes.
-    private readonly ToolStripMenuItem _claudeProjection = new() { Enabled = false, Visible = false };
-    private readonly ToolStripMenuItem _codexProjection = new() { Enabled = false, Visible = false };
 
     private readonly ToolStripMenuItem _startup = new(CommandLabels[2]);
     private Icon? _generated;
@@ -55,13 +48,10 @@ internal sealed class Tray : IDisposable
     public Tray()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add(_claudeStatus);
-        menu.Items.Add(_claudeProjection);
-        menu.Items.Add(_codexStatus);
-        menu.Items.Add(_codexProjection);
-        menu.Items.Add(new ToolStripSeparator());
-
-        var refresh = new ToolStripMenuItem(CommandLabels[0]);
+        var refresh = new ToolStripMenuItem(CommandLabels[0])
+        {
+            ToolTipText = "Re-read local usage, poll Codex, and retry the Claude fallback when needed. Values may stay the same.",
+        };
         refresh.Click += (_, _) => RefreshRequested?.Invoke();
         menu.Items.Add(refresh);
 
@@ -138,18 +128,10 @@ internal sealed class Tray : IDisposable
     }
 
     /// <summary>
-    /// Refreshes the menu and hover text. Either provider may be null, meaning it's turned off in
-    /// config — shown as such rather than silently omitted, so a disabled provider is not mistaken
-    /// for a broken one.
+    /// Refreshes the tray icon's compact hover text. Disabled providers are omitted.
     /// </summary>
     public void Update(UsageModel? claude, UsageModel? codex)
     {
-        _claudeStatus.Text = "Claude: " + (claude?.StatusText is { Length: > 0 } c ? c : "(disabled)");
-        _codexStatus.Text = "Codex: " + (codex?.StatusText is { Length: > 0 } x ? x : "(disabled)");
-
-        SetProjection(_claudeProjection, claude);
-        SetProjection(_codexProjection, codex);
-
         var parts = new List<string>();
         if (claude is not null) parts.Add("C " + Compact(claude));
         if (codex is not null) parts.Add("X " + Compact(codex));
@@ -161,24 +143,6 @@ internal sealed class Tray : IDisposable
 
     public void SetTargetSummary(int enabled, int disabled) =>
         _targetSummary.Text = $"{enabled} enabled · {disabled} disabled";
-
-    /// <summary>
-    /// The projected-exhaustion line under a provider's status, indented so it reads as a
-    /// subordinate detail. Hidden outright when nothing can be projected — a provider that has
-    /// only just started being watched has no rate yet, and saying so on every open would be
-    /// noise.
-    /// </summary>
-    private static void SetProjection(ToolStripMenuItem item, UsageModel? model)
-    {
-        if (model?.ProjectionText is not { Length: > 0 } text)
-        {
-            item.Visible = false;
-            return;
-        }
-
-        item.Text = "      at this rate: " + text;
-        item.Visible = true;
-    }
 
     /// <summary>Shortest useful form of a model, for the 63-character tooltip.</summary>
     private static string Compact(UsageModel model)

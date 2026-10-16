@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Xunit;
 
 namespace UsageBars.Tests;
@@ -8,14 +9,20 @@ namespace UsageBars.Tests;
 public class ConfigNormalizeTests
 {
     [Fact]
-    public void RedIsNeverAllowedAboveAmber()
+    public void LegacyCreditAndAbsoluteColorSettingsAreIgnored()
     {
-        var config = new Config { AmberAtPercent = 30, RedAtPercent = 80 };
-
+        var config = JsonSerializer.Deserialize<Config>("""
+            { "RequestCreditUrl":"https://example.com/credit", "RequestCreditDomain":"company",
+              "CodexRequestCreditUrl":"https://example.com/reset", "AmberAtPercent":50, "RedAtPercent":20 }
+            """)!;
         config.Normalize();
-
-        Assert.Equal(30, config.RedAtPercent);
-        Assert.Contains(config.Adjustments, a => a.Contains(nameof(Config.RedAtPercent)));
+        var model = UsageModel.BuildCodex(
+            new CodexSnapshot(new CodexWindow(99, 300, null), null, DateTimeOffset.Now), true, null, config);
+        Assert.Equal(PillAction.None, model.Action);
+        Assert.Null(model.ActionUrl);
+        var saved = JsonSerializer.Serialize(config);
+        foreach (var key in new[] { "RequestCreditUrl", "RequestCreditDomain", "CodexRequestCreditUrl", "AmberAtPercent", "RedAtPercent" })
+            Assert.DoesNotContain(key, saved);
     }
 
     [Fact]
@@ -64,34 +71,6 @@ public class ConfigNormalizeTests
 
         Assert.Equal(new Config().TerminalTitlePattern, config.TerminalTitlePattern);
         Assert.Contains(config.Adjustments, a => a.Contains(nameof(Config.TerminalTitlePattern)));
-    }
-
-    /// <summary>
-    /// The action URL is opened with UseShellExecute, so a non-http scheme in a config file would
-    /// be a way to make the app launch something arbitrary.
-    /// </summary>
-    [Theory]
-    [InlineData("file:///C:/Windows/System32/cmd.exe")]
-    [InlineData("javascript:alert(1)")]
-    [InlineData("not a url")]
-    public void NonHttpActionUrlsAreCleared(string url)
-    {
-        var config = new Config { RequestCreditUrl = url };
-
-        config.Normalize();
-
-        Assert.Equal("", config.RequestCreditUrl);
-        Assert.NotEmpty(config.Adjustments);
-    }
-
-    [Fact]
-    public void AValidHttpsUrlSurvives()
-    {
-        var config = new Config { RequestCreditUrl = "https://example.com/credit" };
-
-        config.Normalize();
-
-        Assert.Equal("https://example.com/credit", config.RequestCreditUrl);
     }
 
     [Fact]

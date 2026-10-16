@@ -131,7 +131,7 @@ public class ProjectionTests
 }
 
 /// <summary>
-/// Projections as they reach the tray menu, per source. What matters here is that a bar without
+/// Projections retained for diagnostics, per source. What matters here is that a bar without
 /// enough history stays silent rather than showing a confident-looking guess.
 /// </summary>
 public class ModelProjectionTests

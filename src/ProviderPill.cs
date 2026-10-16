@@ -165,7 +165,7 @@ internal sealed class ProviderPill : IDisposable
         _window.SetShown(false);
         if (_config is not null)
             _window.View.Update(
-                _model, _lightTheme, _config.AmberAtPercent, _config.RedAtPercent, _previewDimmed);
+                _model, _lightTheme, _previewDimmed);
 
         Rebuilt?.Invoke(this);
     }
@@ -183,7 +183,7 @@ internal sealed class ProviderPill : IDisposable
         _model = model;
         _lightTheme = lightTheme;
         _config = config;
-        _window.View.Update(model, lightTheme, config.AmberAtPercent, config.RedAtPercent, _previewDimmed);
+        _window.View.Update(model, lightTheme, _previewDimmed);
     }
 
     public void SetPreviewDimmed(bool? dimmed)
@@ -191,8 +191,11 @@ internal sealed class ProviderPill : IDisposable
         _previewDimmed = dimmed;
         if (_config is not null)
             _window.View.Update(
-                _model, _lightTheme, _config.AmberAtPercent, _config.RedAtPercent, _previewDimmed);
+                _model, _lightTheme, _previewDimmed);
     }
+
+    /// <summary>Advances the reset marker even when the provider's reading has not changed.</summary>
+    public void RefreshTime() => _window.View.InvalidateVisual();
 
     /// <summary>
     /// Re-places the pill on its host, refreshing the host's description (a terminal's title

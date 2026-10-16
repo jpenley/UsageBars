@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -6,9 +7,15 @@ using System.Threading;
 
 namespace UsageBars;
 
+internal sealed record ClaudeUsageWindow(string Label, double UsedPct, string? Detail)
+{
+    public TimeSpan? WindowDuration { get; init; }
+}
+
 /// <summary>One reading of the Claude Code <c>/usage</c> meter.</summary>
 internal sealed record ClaudeCodeUsage
 {
+    public IReadOnlyList<ClaudeUsageWindow> Windows { get; init; } = Array.Empty<ClaudeUsageWindow>();
     /// <summary>Percent of the meter already consumed (0-100).</summary>
     public double? UsedPct { get; init; }
 
@@ -150,6 +157,64 @@ internal static class ClaudeCodeUsageReader
     private static ClaudeCodeUsage Parse(string screen)
     {
         var lines = screen.Replace("\r", "").Split('\n');
+
+        // winpty retains successive frames. Match readings to their own headings, and
+        // replace each window independently when a subsequent frame refreshes it.
+        var windows = new Dictionary<string, ClaudeUsageWindow>();
+        string? heading = null, firstHeading = null;
+        for (var i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            if (line.Equals("Current session", StringComparison.OrdinalIgnoreCase) ||
+                line.StartsWith("Current week", StringComparison.OrdinalIgnoreCase))
+            {
+                heading = line;
+                firstHeading ??= line;
+                continue;
+            }
+            if (line.Length == 0) continue;
+            var match = UsedPercent.Match(line);
+            if (match.Success && heading is not null &&
+                int.TryParse(match.Groups[1].Value, out var pct) && pct is >= 0 and <= 100)
+            {
+                // A partial redraw can start at ANY meter. Without its heading we cannot
+                // attribute it safely, so retain the last explicitly labelled reading.
+                var key = heading;
+                heading = null;
+                var label = key.Equals("Current session", StringComparison.OrdinalIgnoreCase) ? "5h"
+                    : key.Equals("Current week (all models)", StringComparison.OrdinalIgnoreCase) ? "7d"
+                    : key.StartsWith("Current week (", StringComparison.OrdinalIgnoreCase) && key.EndsWith(")")
+                        ? key.Substring("Current week (".Length, key.Length - "Current week (".Length - 1) : key;
+                string? detail = null;
+                for (var next = i + 1; next < lines.Length && next <= i + 2; next++)
+                {
+                    var candidate = lines[next].Trim();
+                    if (candidate.Length == 0) continue;
+                    if (candidate.StartsWith("Resets", StringComparison.OrdinalIgnoreCase)) detail = candidate;
+                    break;
+                }
+                windows[key] = new ClaudeUsageWindow(label, pct, detail)
+                {
+                    WindowDuration = key.Equals("Current session", StringComparison.OrdinalIgnoreCase)
+                        ? ResetEstimator.FiveHourWindow : ResetEstimator.SevenDayWindow,
+                };
+                continue;
+            }
+            // Reset lines belong to the active meter; unrelated panel content ends it.
+            if (!line.StartsWith("Resets", StringComparison.OrdinalIgnoreCase)) heading = null;
+        }
+        if (windows.Count > 0)
+        {
+            var first = windows[firstHeading!];
+            return new ClaudeCodeUsage
+            {
+                UsedPct = first.UsedPct,
+                MeterLabel = firstHeading,
+                MeterDetail = first.Detail,
+                Windows = new List<ClaudeUsageWindow>(windows.Values),
+                ReadAt = DateTimeOffset.Now,
+            };
+        }
 
         // Value from the LAST match (earlier frames are mid-refresh); label from the FIRST
         // match, whose preceding line still holds the meter title — later partial redraws

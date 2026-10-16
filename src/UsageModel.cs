@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace UsageBars;
 
@@ -7,9 +8,6 @@ namespace UsageBars;
 internal enum PillAction
 {
     None,
-
-    /// <summary>Meter is nearly empty: link out to request more credit.</summary>
-    RequestCredit,
 
     /// <summary>No Claude Code CLI, so there's no fallback source: link to the install docs.</summary>
     InstallClaudeCode,
@@ -20,8 +18,15 @@ internal enum PillAction
 
 internal sealed record UsageBar(string Label, double? RemainingPct)
 {
-    /// <summary>When this window next resets, when that's known. Shown in the tray tooltip.</summary>
+    public bool ShowInPill { get; init; } = true;
+    /// <summary>When this window next resets, when that's known.</summary>
     public DateTimeOffset? ResetsAt { get; init; }
+
+    /// <summary>The provider's nominal window length, used to normalize the reset pointer.</summary>
+    public TimeSpan? WindowDuration { get; init; }
+
+    /// <summary>Provider-reported reset text when no timestamp has been parsed.</summary>
+    public string? ReportedResetText { get; init; }
 
     /// <summary>
     /// When this bar is projected to reach 0 % at the rate it is currently moving, or null when
@@ -39,14 +44,17 @@ internal sealed record UsageBar(string Label, double? RemainingPct)
 
 /// <summary>
 /// Merges the two possible sources into what the overlay draws. The local JSON file wins when it
-/// carries values (free and updated every ~5 min); the scraped Claude Code meter is the fallback
-/// for accounts where that file stays empty.
+/// carries fresh values; the scraped Claude Code meters are the fallback when the file
+/// is empty or stops updating.
 /// </summary>
 internal sealed record UsageModel
 {
     public IReadOnlyList<UsageBar> Bars { get; init; } = Array.Empty<UsageBar>();
 
     public bool Stale { get; init; }
+
+    /// <summary>Time of the displayed sample, or of our successful live reading.</summary>
+    public DateTimeOffset? ReadingAt { get; init; }
 
     public PillAction Action { get; init; }
 
@@ -61,25 +69,19 @@ internal sealed record UsageModel
     /// Per-bar projected time to 0 % at the current burn rate, or empty when nothing can be
     /// projected yet.
     ///
-    /// Held apart from <see cref="StatusText"/> and given its own line in the tray menu because it
-    /// is a prediction rather than a reading. Folding it into the status line made an already long
-    /// line longer while hiding exactly the distinction that matters.
+    /// Retained for diagnostics; the tray only shows the current remaining percentages.
     /// </summary>
     public string ProjectionText { get; init; } = "";
 
     /// <summary>Burn rate / projection behind the warning decision, when one was computed.</summary>
     public VelocityEstimate? Velocity { get; init; }
 
-    /// <summary>Why the icon is or isn't showing, for diagnostics.</summary>
+    /// <summary>The legacy low-usage estimate, for diagnostics.</summary>
     public string? WarnReason { get; init; }
 
     /// <summary>
-    /// Whether usage is low enough to warrant a warning, independently of whether an action icon
-    /// is offered.
-    ///
-    /// Kept separate from <see cref="Action"/> because the icon can be withheld — off-domain users
-    /// aren't offered a workplace-internal link — and the warning itself must survive that. The
-    /// bar still turns red; only the clickable affordance goes away.
+    /// Whether the diagnostic low-usage estimate warns. Pill colours are determined by the
+    /// distance from the reset pointer, independently of this estimate.
     /// </summary>
     public bool Warned { get; init; }
 
@@ -105,33 +107,23 @@ internal sealed record UsageModel
         UsageHistory history,
         Config config)
     {
-        var requestCreditUrl = config.RequestCreditUrl;
-
-        // Only offered when a link is configured, and — since a configured link may be
-        // workplace-internal — only to users on the configured domain. The warning itself is never
-        // withheld — see UsageModel.Warned.
-        var hasUrl = !string.IsNullOrWhiteSpace(requestCreditUrl);
-        var onDomain = UserDomain.Matches(config.RequestCreditDomain);
-        var offerCredit = hasUrl && onDomain;
-        var withheld = !hasUrl
-            ? "; no RequestCreditUrl configured"
-            : !onDomain ? $"; icon withheld off {config.RequestCreditDomain} domain" : "";
-
         var buildNow = DateTimeOffset.Now;
 
         // Preferred: the local file, when it actually has utilization values.
-        if (file.HasValues)
+        if (file.HasValues && (!NeedsClaudeFallback(file, config) ||
+            scraped is not { HasValue: true } || scraped.ReadAt is null ||
+            (file.SampleTime is { } sampled && scraped.ReadAt <= sampled)))
         {
             // The file's own sample series is what makes these two projectable: several days of
             // five-minute readings, already on disk.
             var bars = new List<UsageBar>();
             if (file.FiveHourUsedPct is { } fh)
                 bars.Add(WithProjection(
-                    new UsageBar("5h", 100 - fh) { ResetsAt = file.FiveHourResetsAt },
+                    new UsageBar("5h", 100 - fh) { ResetsAt = file.FiveHourResetsAt, WindowDuration = ResetEstimator.FiveHourWindow },
                     file.FiveHourSeries, config, buildNow));
             if (file.SevenDayUsedPct is { } sd)
                 bars.Add(WithProjection(
-                    new UsageBar("7d", 100 - sd) { ResetsAt = file.SevenDayResetsAt },
+                    new UsageBar("7d", 100 - sd) { ResetsAt = file.SevenDayResetsAt, WindowDuration = ResetEstimator.SevenDayWindow },
                     file.SevenDaySeries, config, buildNow));
 
             var lowest = double.MaxValue;
@@ -148,22 +140,61 @@ internal sealed record UsageModel
                 Bars = bars,
                 Stale = stale,
                 Warned = low,
-                Action = low && offerCredit ? PillAction.RequestCredit : PillAction.None,
-                ActionUrl = low && offerCredit ? requestCreditUrl : null,
                 SourceText = file.SourceLabel ?? "local file",
-                StatusText = Describe(bars, stale) + DescribeResets(bars),
+                ReadingAt = file.SampleTime,
+                StatusText = Describe(bars, stale),
                 ProjectionText = DescribeProjections(bars, buildNow),
                 NextReset = file.NextReset,
                 ResetBasis = file.NextReset is null
                     ? "not derivable from retained samples"
                     : "measured from usage data",
                 WarnReason = low
-                    ? $"rolling window at or below floor of {config.LowThresholdPct:0}%" + withheld
+                    ? $"rolling window at or below floor of {config.LowThresholdPct:0}%"
                     : "rolling windows use the static floor, not velocity",
             };
         }
 
-        // Fallback: the scraped Claude Code meter, with a velocity-based warning.
+        if (scraped is { HasValue: true, Windows.Count: > 0 })
+        {
+            var bars = new List<UsageBar>();
+            var lowest = 100.0;
+            foreach (var window in scraped.Windows)
+            {
+                var remaining = 100 - window.UsedPct;
+                lowest = Math.Min(lowest, remaining);
+                var duration = window.WindowDuration ?? (window.Label switch
+                {
+                    "5h" => ResetEstimator.FiveHourWindow,
+                    "7d" => ResetEstimator.SevenDayWindow,
+                    _ => (TimeSpan?)null,
+                });
+                bars.Add(new UsageBar(window.Label, remaining)
+                {
+                    ReportedResetText = window.Detail,
+                    ResetsAt = duration is { } length
+                        ? ResetEstimator.ParseWindowReset(window.Detail, scraped.ReadAt ?? buildNow, length) : null,
+                    WindowDuration = duration,
+                    ShowInPill = !window.Label.Equals("Fable", StringComparison.OrdinalIgnoreCase),
+                });
+            }
+            var stale = scraped.ReadAt is null ||
+                buildNow - scraped.ReadAt.Value > TimeSpan.FromHours(config.ReadingStaleHours);
+            var low = lowest <= config.LowThresholdPct;
+            return new UsageModel
+            {
+                Bars = bars,
+                Stale = stale,
+                Warned = low,
+                SourceText = "claude-code /usage",
+                ReadingAt = scraped.ReadAt,
+                StatusText = Describe(bars, stale),
+                NextReset = bars.Where(b => b.ResetsAt is not null).Select(b => b.ResetsAt).Min(),
+                ResetBasis = bars.Any(b => b.ResetsAt is not null) ? "parsed from reported window reset" : "reported in meter text; timestamp not parsed",
+                WarnReason = low ? "rolling window at or below floor" : "rolling windows use the static floor",
+            };
+        }
+
+        // Fallback: the scraped Claude Code credit meter, with a velocity-based warning.
         if (scraped is { HasValue: true })
         {
             var now = buildNow;
@@ -186,30 +217,21 @@ internal sealed record UsageModel
             var velocity = UsageVelocity.Estimate(history, remaining, config, scrapedReset);
             var warn = UsageVelocity.ShouldWarn(velocity, remaining, config, out var why);
 
-            var status = Describe(bars, stale);
-            var rate = velocity.Describe();
-            if (!string.IsNullOrEmpty(rate)) status += $" · {rate}";
-
-            if (velocity.NextReset is { } reset)
-                status += $" · resets {ResetEstimator.Describe(reset, now)}";
-
             return new UsageModel
             {
                 Bars = bars,
                 Stale = stale,
                 Warned = warn,
-                Action = warn && offerCredit ? PillAction.RequestCredit : PillAction.None,
-                ActionUrl = warn && offerCredit ? requestCreditUrl : null,
                 SourceText = scraped.MeterLabel is null
                     ? "claude-code /usage"
                     : $"claude-code /usage · {scraped.MeterLabel}",
-                StatusText = status +
-                             (scraped.MeterDetail is null ? "" : $" · {scraped.MeterDetail}"),
+                ReadingAt = scraped.ReadAt,
+                StatusText = Describe(bars, stale),
                 ProjectionText = DescribeProjections(bars, now),
                 Velocity = velocity,
                 NextReset = velocity.NextReset,
                 ResetBasis = velocity.ResetBasis,
-                WarnReason = warn ? why + withheld : why,
+                WarnReason = why,
             };
         }
 
@@ -223,10 +245,14 @@ internal sealed record UsageModel
             ActionUrl = notInstalled ? ClaudeCli.InstallUrl : null,
             SourceText = notInstalled ? "Claude Code not installed" : "no data",
             StatusText = notInstalled
-                ? "Claude Code not installed — click + to install"
+                ? "Claude Code not installed — click ! to install"
                 : scraped?.Error ?? file.Error ?? "no usage data available",
         };
     }
+
+    internal static bool NeedsClaudeFallback(UsageSnapshot file, Config config) =>
+        !file.HasValues || file.SampleTime is null ||
+        file.IsStaleAfter(TimeSpan.FromMinutes(config.FileStaleMinutes));
 
     /// <summary>
     /// Key under which a Codex window's readings are accumulated in <see cref="BarHistory"/>.
@@ -282,10 +308,18 @@ internal sealed record UsageModel
 
         if (snapshot.Primary is { } primary)
             bars.Add(Projected(
-                new UsageBar(primary.Label, primary.RemainingPct) { ResetsAt = primary.ResetsAt }));
+                new UsageBar(primary.Label, primary.RemainingPct)
+                {
+                    ResetsAt = primary.ResetsAt,
+                    WindowDuration = primary.WindowMinutes is > 0 ? TimeSpan.FromMinutes(primary.WindowMinutes.Value) : null,
+                }));
         if (snapshot.Secondary is { } secondary)
             bars.Add(Projected(
-                new UsageBar(secondary.Label, secondary.RemainingPct) { ResetsAt = secondary.ResetsAt }));
+                new UsageBar(secondary.Label, secondary.RemainingPct)
+                {
+                    ResetsAt = secondary.ResetsAt,
+                    WindowDuration = secondary.WindowMinutes is > 0 ? TimeSpan.FromMinutes(secondary.WindowMinutes.Value) : null,
+                }));
 
         // On usage-based and enterprise seats the spend budget is the binding constraint, exactly
         // as the credit meter is on the Claude side.
@@ -299,17 +333,7 @@ internal sealed record UsageModel
         var low = lowest <= config.LowThresholdPct;
         var stale = now - snapshot.ReadAt > TimeSpan.FromHours(config.ReadingStaleHours);
 
-        // Only offer a link if one is configured — unlike Claude's credit runbook there is no
-        // universal Codex "get more" URL, and an icon that goes nowhere is worse than no icon.
-        // The same domain restriction applies, for the same reason.
-        var url = string.IsNullOrWhiteSpace(config.CodexRequestCreditUrl)
-                  || !UserDomain.Matches(config.RequestCreditDomain)
-            ? null
-            : config.CodexRequestCreditUrl;
-
-        var status = Describe(bars, stale) + DescribeResets(bars);
-        if (snapshot.ResetCreditsAvailable > 0)
-            status += $" · {snapshot.ResetCreditsAvailable} reset credit(s) available";
+        var status = Describe(bars, stale);
         if (snapshot.LimitReached is { Length: > 0 } reached)
             status += $" · {reached.Replace('_', ' ')}";
 
@@ -318,11 +342,10 @@ internal sealed record UsageModel
             Bars = bars,
             Stale = stale,
             Warned = low,
-            Action = low && url is not null ? PillAction.RequestCredit : PillAction.None,
-            ActionUrl = low ? url : null,
             SourceText = snapshot.PlanType is { Length: > 0 } plan
                 ? $"codex app-server · {plan}"
                 : "codex app-server",
+            ReadingAt = snapshot.ReadAt,
             StatusText = status,
             ProjectionText = DescribeProjections(bars, now),
             NextReset = snapshot.NextReset,
@@ -367,9 +390,7 @@ internal sealed record UsageModel
     }
 
     /// <summary>
-    /// Per-bar projected time to 0 %, for the tray menu's own line. Silent for bars with too little
-    /// history — an empty line is better than a row of "unknown", and matches how
-    /// <see cref="DescribeResets"/> handles the same situation.
+    /// Per-bar projected time to 0 %, for diagnostics. Silent for bars with too little history.
     /// </summary>
     private static string DescribeProjections(IReadOnlyList<UsageBar> bars, DateTimeOffset now)
     {
@@ -383,33 +404,32 @@ internal sealed record UsageModel
     }
 
     /// <summary>
-    /// Hover text for the pill: one line per bar whose reset is known, or null when none is, so a
-    /// pill with nothing to say shows no tooltip rather than a row of "unknown".
+    /// Hover text for the pill: known resets and the age of the displayed reading.
     /// </summary>
     public string? ResetTooltip(DateTimeOffset now)
     {
         var lines = new List<string>();
         foreach (var bar in Bars)
         {
-            if (bar.ResetsAt is not { } reset) continue;
-            lines.Add($"{bar.Label} resets {ResetEstimator.Describe(reset, now)}");
+            if (!bar.ShowInPill) continue;
+            if (!string.IsNullOrWhiteSpace(bar.ReportedResetText))
+                lines.Add($"{bar.Label} {bar.ReportedResetText}");
+            else if (bar.ResetsAt is { } reset)
+                lines.Add($"{bar.Label} resets {ResetEstimator.Describe(reset, now)}");
+        }
+        if (ReadingAt is { } readingAt)
+        {
+            var age = now - readingAt;
+            if (age < TimeSpan.Zero) age = TimeSpan.Zero;
+            var text = age.TotalDays >= 1 ? $"{(int)age.TotalDays}d {age.Hours}h"
+                : age.TotalHours >= 1 ? $"{(int)age.TotalHours}h {age.Minutes}m"
+                : age.TotalMinutes >= 1 ? $"{(int)age.TotalMinutes}m {age.Seconds}s"
+                : $"{age.Seconds}s";
+            lines.Add($"Reading age: {text}");
         }
         return lines.Count == 0 ? null : string.Join(Environment.NewLine, lines);
     }
 
-    /// <summary>
-    /// Per-bar reset deadlines, appended to the status line. Silent when nothing is known, so an
-    /// account whose history is too short doesn't get a row of "unknown".
-    /// </summary>
-    private static string DescribeResets(IReadOnlyList<UsageBar> bars)
-    {
-        var now = DateTimeOffset.Now;
-        var parts = new List<string>();
-        foreach (var bar in bars)
-        {
-            if (bar.ResetsAt is not { } reset) continue;
-            parts.Add($"{bar.Label} resets {ResetEstimator.Describe(reset, now)}");
-        }
-        return parts.Count == 0 ? "" : " · " + string.Join(", ", parts);
-    }
+    public UsageModel ForPill() => this with { Bars = Bars.Where(bar => bar.ShowInPill).ToArray() };
+
 }

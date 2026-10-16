@@ -37,10 +37,10 @@
   "ResetDayOfWeek": "Friday",
   "ResetHour": 0,
 
-  // --- When the "+" (request more credit) icon appears ------------------------
+  // --- Diagnostic low-usage estimates ----------------------------------------
 
-  // Primary trigger: show "+" when usage is projected to run out within this
-  // many hours at the recent burn rate.
+  // Mark the diagnostic estimate as low when usage is projected to run out
+  // within this many hours. This does not control pill colours or offer actions.
   "WarnHoursToEmpty": 2,
 
   // Safety margin on the measured rate. 1.25 assumes you'll burn 25% faster
@@ -56,17 +56,17 @@
   // How far back to look when measuring the current rate.
   "VelocityWindowHours": 3,
 
-  // Minimum samples / elapsed time before a rate is trusted. Below these, the
-  // "+" falls back to LowThresholdPct alone.
+  // Minimum samples / elapsed time before a diagnostic rate is trusted.
+  // Below these, the estimate uses LowThresholdPct alone.
   "MinVelocitySamples": 3,
   "MinVelocitySpanMinutes": 20,
 
   // --- Bar colours ------------------------------------------------------------
 
-  // Remaining percentage at or below which a bar turns amber, and below which it
-  // turns red. Red is clamped so it can never exceed amber.
-  "AmberAtPercent": 50,
-  "RedAtPercent": 20,
+  // Each timed bar has a triangle at the fraction of its window left until reset.
+  // Its fill is yellow within +/-2 percentage points of that triangle and blends
+  // smoothly to full red below or green above at a distance of 15 points.
+  // A bar without a known window and reset is neutral and has no triangle.
 
   // --- Freshness --------------------------------------------------------------
 
@@ -80,7 +80,7 @@
 
   // How often to re-read Claude Code's /usage screen. Each read runs a hidden
   // Claude Code session for ~20s, so keep this generous. Only used when
-  // plan-usage-history.json has no values (usage-based and enterprise seats).
+  // plan-usage-history.json has no values or its reading has become stale.
   // Repeated failures back off exponentially, capped at this interval.
   "ScrapeIntervalMinutes": 15,
 
@@ -135,28 +135,6 @@
   // capture-time evidence; Codex terminals are normally detected by process ancestry.
   "TerminalTitlePattern": "(?i)^\\s*[✳⠀-⣿]|\\bclaude code\\b|^\\s*claude\\s*$",
   "CodexTitlePattern": "(?i)^\\s*codex\\b|\\bcodex\\s+(?:cli|session)\\b",
-
-  // --- Action icons -----------------------------------------------------------
-
-  // Where the Claude "+" icon sends you when the meter runs low. Must be
-  // http(s). Empty by default: there is no universal "get more credit" page,
-  // and no icon is drawn unless you set this.
-  "RequestCreditUrl": "",
-
-  // Windows domain whose members are offered the "+" icon at all. "" = no
-  // restriction.
-  //
-  // Useful when RequestCreditUrl is an internal page that only resolves inside
-  // a company network, since this is a portable exe that travels. Users off
-  // that domain still get the red bar and the warning — they are just not
-  // offered a link that would go nowhere for them. Matches either the NetBIOS
-  // domain (CONTOSO) or any label of the DNS domain (corp.contoso.com); a
-  // non-domain-joined machine never matches.
-  "RequestCreditDomain": "",
-
-  // Where the Codex "+" icon sends you. Empty by default: there is no universal
-  // "get more Codex quota" page, and no icon is drawn unless you set this.
-  "CodexRequestCreditUrl": "",
 
   // --- Placement --------------------------------------------------------------
 

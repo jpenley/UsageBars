@@ -28,8 +28,6 @@ internal sealed class OverlayView : FrameworkElement
 
     private UsageModel _model = new();
     private bool _light;
-    private double _amberAt = 50;
-    private double _redAt = 20;
     private string? _prefix;
 
     /// <summary>
@@ -67,17 +65,13 @@ internal sealed class OverlayView : FrameworkElement
     /// <summary>Hover text for what is currently drawn. See <see cref="UsageModel.ResetTooltip"/>.</summary>
     public string? ResetTooltip(DateTimeOffset now) => _model.ResetTooltip(now);
 
-    public void Update(
-        UsageModel model, bool lightTheme, double amberAt = 50, double redAt = 20,
-        bool? dimmedOverride = null)
+    public void Update(UsageModel model, bool lightTheme, bool? dimmedOverride = null)
     {
-        _model = model;
+        _model = model.ForPill();
         _light = lightTheme;
-        _amberAt = amberAt;
-        _redAt = redAt;
         Opacity = dimmedOverride ?? (model.Stale || !model.HasValues) ? 0.6 : 1.0;
 
-        var width = Measure(model);
+        var width = Measure(_model);
         if (Math.Abs(width - LogicalWidth) > 0.5)
         {
             LogicalWidth = width;
@@ -133,7 +127,7 @@ internal sealed class OverlayView : FrameworkElement
         for (var i = 0; i < _model.Bars.Count; i++)
         {
             if (i > 0) x += GroupGap;
-            DrawGroup(dc, ref x, height, dpi, _model.Bars[i]);
+            DrawGroup(dc, ref x, height, dpi, _model.Bars[i], DateTimeOffset.UtcNow);
         }
 
         if (_model.Action != PillAction.None)
@@ -149,7 +143,7 @@ internal sealed class OverlayView : FrameworkElement
         }
     }
 
-    private void DrawGroup(DrawingContext dc, ref double x, double height, double dpi, UsageBar bar)
+    private void DrawGroup(DrawingContext dc, ref double x, double height, double dpi, UsageBar bar, DateTimeOffset now)
     {
         var labelText = Text(bar.Label, Label, dpi);
         dc.DrawText(labelText, new Point(x, (height - labelText.Height) / 2));
@@ -157,17 +151,33 @@ internal sealed class OverlayView : FrameworkElement
 
         var track = new Rect(x, (height - BarHeight) / 2, BarWidth, BarHeight);
         dc.DrawRoundedRectangle(Track, null, track, BarHeight / 2, BarHeight / 2);
+        var pace = ResetPace.For(bar, now);
 
-        if (bar.RemainingPct is { } remaining)
+        if (bar.RemainingPct is { } remaining && double.IsFinite(remaining))
         {
             var fraction = Math.Clamp(remaining / 100.0, 0, 1);
             if (fraction > 0)
             {
-                // Never narrower than the cap radius, so a sliver still reads as a rounded bar.
-                var fillWidth = Math.Max(BarHeight, BarWidth * fraction);
-                dc.DrawRoundedRectangle(FillFor(remaining), null,
+                // Keep the endpoint proportional: a minimum-width sliver can falsely pass a
+                // nearby reset pointer when the allowance is almost empty.
+                var fillWidth = BarWidth * fraction;
+                var fill = pace is { } known ? Frozen(known.FillColor) : NeutralFill;
+                dc.DrawRoundedRectangle(fill, null,
                     new Rect(track.X, track.Y, fillWidth, BarHeight), BarHeight / 2, BarHeight / 2);
             }
+        }
+        if (pace is { } timing)
+        {
+            var pointerX = track.X + BarWidth * timing.TimeRemainingPct / 100;
+            var pointer = new StreamGeometry();
+            using (var path = pointer.Open())
+            {
+                path.BeginFigure(new Point(pointerX - 3.5, track.Y - 5), isFilled: true, isClosed: true);
+                path.LineTo(new Point(pointerX + 3.5, track.Y - 5), isStroked: false, isSmoothJoin: false);
+                path.LineTo(new Point(pointerX, track.Y - 1), isStroked: false, isSmoothJoin: false);
+            }
+            pointer.Freeze();
+            dc.DrawGeometry(Value, null, pointer);
         }
         x += BarWidth + Gap;
 
@@ -179,10 +189,10 @@ internal sealed class OverlayView : FrameworkElement
     private void DrawActionIcon(DrawingContext dc, Rect rect, double dpi)
     {
         var centre = new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2);
-        var accent = _model.Action == PillAction.InstallClaudeCode ? Amber : Green;
+        var accent = Amber;
         dc.DrawEllipse(accent, null, centre, rect.Width / 2, rect.Height / 2);
 
-        var glyph = _model.Action == PillAction.InstallClaudeCode ? "!" : "+";
+        var glyph = "!";
         var text = new FormattedText(glyph, CultureInfo.InvariantCulture,
             System.Windows.FlowDirection.LeftToRight, Face, FontSize + 1, IconGlyph, dpi);
         dc.DrawText(text, new Point(centre.X - text.Width / 2, centre.Y - text.Height / 2));
@@ -204,20 +214,7 @@ internal sealed class OverlayView : FrameworkElement
     private Brush Value => _light ? LightValue : DarkValue;
     private Brush IconGlyph => _light ? LightPillSolid : DarkPillSolid;
 
-    /// <summary>
-    /// Colour by remaining percentage, except that an active warning forces red. The warning is
-    /// velocity-based, so it can fire while the bar is still fairly full — a green bar next to a
-    /// "+" would read as contradictory.
-    ///
-    /// Keyed on the warning rather than on the icon, so a user who isn't offered the workplace
-    /// credit link still sees the same red bar. Withholding the link must not withhold the alarm.
-    /// </summary>
-    private Brush FillFor(double remaining)
-    {
-        if (_model.Warned) return Red;
-        if (remaining < _redAt) return Red;
-        return remaining <= _amberAt ? Amber : Green;
-    }
+    private Brush NeutralFill => _light ? LightNeutralFill : DarkNeutralFill;
 
     private static readonly Brush DarkPill = Frozen(Color.FromArgb(0x26, 0xFF, 0xFF, 0xFF));
     private static readonly Brush DarkTrack = Frozen(Color.FromArgb(0x33, 0xFF, 0xFF, 0xFF));
@@ -231,9 +228,9 @@ internal sealed class OverlayView : FrameworkElement
     private static readonly Brush LightValue = Frozen(Color.FromArgb(0xE0, 0x1A, 0x1A, 0x18));
     private static readonly Brush LightPillSolid = Frozen(Color.FromRgb(0xFF, 0xFF, 0xFF));
 
-    private static readonly Brush Green = Frozen(Color.FromRgb(0x3F, 0xB9, 0x50));
+    private static readonly Brush LightNeutralFill = Frozen(Color.FromRgb(0x77, 0x77, 0x73));
+    private static readonly Brush DarkNeutralFill = Frozen(Color.FromRgb(0xB0, 0xB0, 0xAA));
     private static readonly Brush Amber = Frozen(Color.FromRgb(0xE3, 0xA0, 0x08));
-    private static readonly Brush Red = Frozen(Color.FromRgb(0xF8, 0x51, 0x49));
 
     private static Brush Frozen(Color color)
     {

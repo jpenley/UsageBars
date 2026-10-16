@@ -7,6 +7,28 @@ namespace UsageBars.Tests;
 
 public class UsageModelTests
 {
+    [Fact]
+    public void FreshScrapeReplacesStaleDesktopHistory()
+    {
+        var scraped = new ClaudeCodeUsage { UsedPct = 47, MeterLabel = "credit", ReadAt = DateTimeOffset.Now };
+        var model = UsageModel.Build(FileWith(29, 10, DateTimeOffset.Now.AddHours(-15)),
+            scraped, new UsageHistory(), new Config());
+        Assert.Equal(53, Assert.Single(model.Bars).RemainingPct);
+        Assert.False(model.Stale);
+        Assert.True(UsageModel.NeedsClaudeFallback(FileWith(29, 10, DateTimeOffset.Now.AddHours(-15)), new Config()));
+        Assert.False(UsageModel.NeedsClaudeFallback(FileWith(29, 10), new Config()));
+    }
+
+    [Fact]
+    public void AncientCachedCreditDoesNotReplaceMoreRecentDesktopHistory()
+    {
+        var model = UsageModel.Build(FileWith(29, 10, DateTimeOffset.Now.AddHours(-15)),
+            new ClaudeCodeUsage { UsedPct = 12, ReadAt = DateTimeOffset.Now.AddDays(-60) },
+            new UsageHistory(), new Config());
+        Assert.Equal(90, model.Bars.Single(b => b.Label == "7d").RemainingPct);
+        Assert.True(model.Stale);
+    }
+
     private static UsageSnapshot FileWith(double? fh, double? sd, DateTimeOffset? sampled = null) =>
         new()
         {
@@ -47,31 +69,25 @@ public class UsageModelTests
     }
 
     [Fact]
-    public void TheStaticFloorTriggersTheActionOnTheFileSource()
+    public void LowUsageHasNoCreditAction()
     {
-        // Domain restriction explicitly cleared: this asserts the threshold logic, and must not
-        // depend on whether the machine running the tests happens to be domain-joined.
         var config = new Config
         {
             LowThresholdPct = 10,
-            RequestCreditUrl = "https://example.com/credit",
-            RequestCreditDomain = "",
         };
 
         var model = UsageModel.Build(FileWith(95, 20), null, new UsageHistory(), config);
 
-        Assert.Equal(PillAction.RequestCredit, model.Action);
-        Assert.Equal(config.RequestCreditUrl, model.ActionUrl);
+        Assert.Equal(PillAction.None, model.Action);
+        Assert.Null(model.ActionUrl);
     }
 
     [Fact]
-    public void TheStaticFloorWarnsEvenWhenTheIconIsWithheld()
+    public void TheStaticFloorRemainsInDiagnostics()
     {
         var config = new Config
         {
             LowThresholdPct = 10,
-            RequestCreditUrl = "https://example.com/credit",
-            RequestCreditDomain = "nobody-is-in-this",
         };
 
         var model = UsageModel.Build(FileWith(95, 20), null, new UsageHistory(), config);
@@ -157,12 +173,8 @@ public class CodexModelTests
         Assert.Equal(CodexCli.InstallUrl, model.ActionUrl);
     }
 
-    /// <summary>
-    /// There is no universal "get more Codex quota" page, so unless one is configured the icon is
-    /// omitted rather than pointed at Claude's credit runbook.
-    /// </summary>
     [Fact]
-    public void NoActionIconWithoutAConfiguredCodexUrl()
+    public void CodexUsageNeverOffersCreditAction()
     {
         var config = new Config { LowThresholdPct = 50 };
 
@@ -174,31 +186,26 @@ public class CodexModelTests
     }
 
     [Fact]
-    public void AConfiguredCodexUrlEnablesTheIcon()
+    public void ResetPointerUsesTheActualDurationRatherThanTheRoundedLabel()
     {
-        var config = new Config
-        {
-            LowThresholdPct = 50,
-            CodexRequestCreditUrl = "https://example.com/topup",
-            // Cleared so this asserts the URL logic rather than the machine's domain membership.
-            RequestCreditDomain = "",
-        };
-
+        var now = DateTimeOffset.Now;
         var model = UsageModel.BuildCodex(
-            Snapshot(new CodexWindow(95, 300, null)), true, null, config);
+            Snapshot(new CodexWindow(50, 280, now.AddMinutes(140))), true, null, new Config());
 
-        Assert.Equal(PillAction.RequestCredit, model.Action);
-        Assert.Equal("https://example.com/topup", model.ActionUrl);
+        var bar = Assert.Single(model.Bars);
+        Assert.Equal("5h", bar.Label);
+        Assert.Equal(TimeSpan.FromMinutes(280), bar.WindowDuration);
+        Assert.Equal(50, ResetPace.For(bar, now)!.Value.TimeRemainingPct, precision: 6);
     }
 
     [Fact]
-    public void AvailableResetCreditsAreSurfaced()
+    public void AvailableResetCreditsStayOutOfTrayStatus()
     {
         var snapshot = Snapshot(new CodexWindow(50, 10080, null)) with { ResetCreditsAvailable = 1 };
 
         var model = UsageModel.BuildCodex(snapshot, true, null, new Config());
 
-        Assert.Contains("reset credit", model.StatusText);
+        Assert.DoesNotContain("reset credit", model.StatusText);
     }
 
     [Fact]
