@@ -15,7 +15,14 @@ param(
     [switch]$NoRelaunch,
 
     # Start the app afterwards whether or not it was running.
-    [switch]$Run
+    [switch]$Run,
+
+    # Also write dist\UsageBars-<runtime>.zip (exe + default config), ready to attach to a release.
+    [switch]$Zip,
+
+    # Tag for a GitHub release, e.g. v1.2.0. Implies -Zip, then runs `gh release create` with the zip.
+    # Publishes to GitHub; the tag is created on the pushed commit, so push first.
+    [string]$Release
 )
 
 $ErrorActionPreference = 'Stop'
@@ -94,6 +101,24 @@ $size = [math]::Round((Get-Item $distExe).Length / 1MB, 1)
 Write-Host ""
 Write-Host "dist\UsageBars.exe  ($size MB, $Runtime, self-contained)"
 Write-Host "dist\UsageBars.config.json  (optional - every setting has a working default)"
+
+if ($Zip -or $Release) {
+    # The zip carries the pristine default config, never the user's tuned dist copy.
+    $zipPath = Join-Path $dist "UsageBars-$Runtime.zip"
+    $zipStage = Join-Path $staging 'zip'
+    New-Item -ItemType Directory -Force -Path $zipStage | Out-Null
+    Copy-Item $distExe $zipStage
+    Copy-Item (Join-Path $root 'UsageBars.config.default.json') (Join-Path $zipStage 'UsageBars.config.json')
+    if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
+    Compress-Archive -Path (Join-Path $zipStage '*') -DestinationPath $zipPath
+    Remove-Item $zipStage -Recurse -Force
+    Write-Host "dist\UsageBars-$Runtime.zip  ($([math]::Round((Get-Item $zipPath).Length / 1MB, 1)) MB)"
+
+    if ($Release) {
+        gh release create $Release $zipPath --title "UsageBars $Release" --generate-notes
+        if ($LASTEXITCODE -ne 0) { throw "gh release create failed with exit code $LASTEXITCODE" }
+    }
+}
 
 if ($Run -or ($wasRunning -and -not $NoRelaunch)) {
     Start-Process -FilePath $distExe | Out-Null
