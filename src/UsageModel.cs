@@ -203,10 +203,22 @@ internal sealed record UsageModel
             // There is no sample history behind the scrape, so the meter's own secondary line is
             // the only place a reset or expiry can come from.
             var scrapedReset = ResetEstimator.ParseMeterDetail(scraped.MeterDetail, now);
+
+            // Credit and spend meters run on a monthly cycle. Use the meter's own date when it
+            // gives a future one, otherwise the calendar month boundary, so the pill gets the
+            // same pace colour and reset pointer as the rolling windows.
+            var monthly = scraped.ShortLabel != "usage";
+            var (monthEnd, monthLength) = MonthWindow(now);
+            TimeSpan? window = monthly ? monthLength : null;
+            if (monthly && (scrapedReset is null || scrapedReset <= now)) scrapedReset = monthEnd;
             var bars = new List<UsageBar>
             {
                 WithProjection(
-                    new UsageBar(scraped.ShortLabel, remaining) { ResetsAt = scrapedReset },
+                    new UsageBar(scraped.ShortLabel, remaining)
+                    {
+                        ResetsAt = scrapedReset,
+                        WindowDuration = window,
+                    },
                     history.Points(), config, now),
             };
 
@@ -248,6 +260,18 @@ internal sealed record UsageModel
                 ? "Claude Code not installed — click ! to install"
                 : scraped?.Error ?? file.Error ?? "no usage data available",
         };
+    }
+
+    /// <summary>The local calendar month containing <paramref name="now"/>: its end and its length.</summary>
+    private static (DateTimeOffset End, TimeSpan Length) MonthWindow(DateTimeOffset now)
+    {
+        var local = now.ToLocalTime();
+        var start = new DateTime(local.Year, local.Month, 1, 0, 0, 0, DateTimeKind.Unspecified);
+        var end = start.AddMonths(1);
+        var zone = TimeZoneInfo.Local;
+        var startOffset = new DateTimeOffset(start, zone.GetUtcOffset(start));
+        var endOffset = new DateTimeOffset(end, zone.GetUtcOffset(end));
+        return (endOffset, endOffset - startOffset);
     }
 
     internal static bool NeedsClaudeFallback(UsageSnapshot file, Config config) =>

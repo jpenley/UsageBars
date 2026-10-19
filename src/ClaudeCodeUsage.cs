@@ -45,7 +45,7 @@ internal sealed record ClaudeCodeUsage
         get
         {
             var label = MeterLabel?.ToLowerInvariant() ?? "";
-            if (label.Contains("credit")) return "credit";
+            if (label.Contains("credit")) return "C";
             if (label.Contains("spend") || label.Contains("limit")) return "spend";
             return "usage";
         }

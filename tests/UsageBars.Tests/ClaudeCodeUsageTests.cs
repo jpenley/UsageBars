@@ -60,7 +60,7 @@ public class ClaudeCodeUsageTests
             "Claude Code and Cowork credit\n5% used\nOne-time credit · Expires October 14\n\n6% used\n"
         })!;
         Assert.Equal(6, result.UsedPct);
-        Assert.Equal("credit", result.ShortLabel);
+        Assert.Equal("C", result.ShortLabel);
         Assert.Empty(result.Windows);
     }
 }
