@@ -12,6 +12,28 @@
 # Published application and its portable runtime data
 dist/
 
+# Local runtime data and personal configuration outside build/publish folders
+/UsageBars.data/
+/UsageBars.config.json
+
+# Local environment and credential files; keep example templates shareable
+.env*
+!.env.example
+!.env.sample
+!.env.template
+credentials.json
+
+# Private keys and certificate bundles
+*.pem
+*.key
+*.pfx
+*.p12
+*.ppk
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+
 # Local diagnostics and traces
 *.nettrace
 *.nettrace.etlx
