@@ -387,6 +387,9 @@ pwsh -File .\build.ps1
 ```
 
 Output is a self-contained `dist\UsageBars.exe` for `win-x64`.
+
+Add `-Zip` to also write `dist\UsageBars-win-x64.zip` (the exe plus the default config) for sharing.
+Add `-Release v1.2.0` to create a GitHub release with that zip attached; it needs the GitHub CLI and a pushed commit.
 The script supplies a commented config if none exists and preserves an existing personal config.
 
 | Option | Effect |
