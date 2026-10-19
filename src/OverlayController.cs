@@ -28,6 +28,7 @@ internal sealed class OverlayController : IDisposable
 
     private readonly Config _config = Config.Load();
     private readonly DiagnosticLog _log;
+    private readonly LifecycleLog? _lifecycle;
     private readonly Tray _tray;
     private readonly StartupRegistration _startup = new();
     private readonly DispatcherTimer _trackTimer = new() { Interval = TrackInterval };
@@ -115,8 +116,9 @@ internal sealed class OverlayController : IDisposable
 
     private bool _lightTheme = IsLightTheme();
 
-    public OverlayController()
+    public OverlayController(LifecycleLog? lifecycle = null)
     {
+        _lifecycle = lifecycle;
         _log = _config.WriteDiagnosticsLog
             ? DiagnosticLog.Default
             : new DiagnosticLog(AppPaths.DiagnosticsDir, maxBytes: 0, generations: 0);
@@ -175,9 +177,11 @@ internal sealed class OverlayController : IDisposable
             BeginScrape(force: true);
             _codex.RequestRefresh();
         };
-        _tray.ExitRequested += () => ShutdownSequence.Run(
-            Dispose,
-            () => Application.Current.Shutdown());
+        _tray.ExitRequested += () =>
+        {
+            _lifecycle?.Record("exit-requested", "tray Exit");
+            ShutdownSequence.Run(Dispose, () => Application.Current.Shutdown());
+        };
         _tray.DiagnosticsRequested += CopyDiagnostics;
         _tray.DiagnosticsFolderRequested += OpenDiagnosticsFolder;
         _tray.ManageTargetsRequested += ShowTargetManager;
@@ -446,10 +450,12 @@ internal sealed class OverlayController : IDisposable
         foreach (var key in gone)
         {
             var pill = _pills[key];
+            _lifecycle?.Record("pill-retiring", $"{pill.Target.Name}; host=0x{pill.HostHandle.ToInt64():X}");
             _log.Record(pill.Target.Name, "pill", "retired", DiagLevel.Info, "disposed",
                 $"{pill.Host.Description} (host 0x{pill.HostHandle.ToInt64():X})");
             pill.Dispose();
             _pills.Remove(key);
+            _lifecycle?.PillActivity(_pills.Count, $"retired {pill.Target.Name}; host=0x{pill.HostHandle.ToInt64():X}");
         }
     }
 
@@ -471,6 +477,7 @@ internal sealed class OverlayController : IDisposable
             pill.Show();
             pill.UpdateModel(ModelFor(key.Item1), _lightTheme, _config);
             _pills[key] = pill;
+            _lifecycle?.PillActivity(_pills.Count, $"created {target.Name}; host=0x{host.Hwnd.ToInt64():X}");
 
             // Evidence is logged because without it a misattribution is invisible: a pill on a
             // window looks the same whether it belongs there or merely shares the host's process.
@@ -1070,6 +1077,7 @@ internal sealed class OverlayController : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _lifecycle?.Record("controller-disposing");
 
         _trackTimer.Stop();
         _dataTimer.Stop();
@@ -1091,6 +1099,7 @@ internal sealed class OverlayController : IDisposable
 
         _tray.Dispose();
         foreach (var pill in _pills.Values) pill.Dispose();
+        _lifecycle?.Record("controller-disposed");
     }
 }
 

@@ -687,6 +687,16 @@ capture or manager flow.
 
 ## Diagnostics
 
+`UsageBars.data\diagnostics\lifecycle.jsonl` records startup, tray Exit requests, Windows
+session ending, unhandled exceptions and process exit. Each entry is flushed directly to disk
+and includes a run ID, process ID, pill count and last pill activity. A heartbeat is written
+every 30 seconds. The file rotates at 1 MB and keeps one previous file (`lifecycle.jsonl.1`).
+This lifecycle journal remains enabled when `WriteDiagnosticsLog` is false.
+
+On startup, `previous-run-incomplete` means the previous run left no final exit record.
+A forced kill, power loss or native crash may prevent final logging; the journal cannot identify
+the terminating process in those cases. Unhandled exceptions are logged without suppressing them.
+
 Beyond the clipboard dump, UsageBars keeps a rotating log at
 `UsageBars.data\diagnostics\usagebars.jsonl` (1 MB, three generations). It records **state
 changes** rather than every poll, so a source failing the same way every 15 minutes writes one
