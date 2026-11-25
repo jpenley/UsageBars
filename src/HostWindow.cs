@@ -9,6 +9,7 @@ internal enum ProviderId
 {
     Claude,
     Codex,
+    Antigravity,
 }
 
 internal enum HostKind
@@ -37,6 +38,16 @@ internal sealed record ProviderTarget(ProviderId Id, string Name)
     public static readonly ProviderTarget Claude = new(ProviderId.Claude, "Claude");
 
     public static readonly ProviderTarget Codex = new(ProviderId.Codex, "Codex");
+
+    public static readonly ProviderTarget Antigravity = new(ProviderId.Antigravity, "Antigravity");
+
+    public static ProviderTarget For(ProviderId id) => id switch
+    {
+        ProviderId.Claude => Claude,
+        ProviderId.Codex => Codex,
+        ProviderId.Antigravity => Antigravity,
+        _ => Claude,
+    };
 }
 
 /// <summary>
@@ -583,9 +594,9 @@ internal static class OverlayPlacement
             : strip.Left + (usableWidth - groupWidth) / 2 + offsetX;
         var y = strip.Top + (strip.Height - pillHeight) / 2 + offsetY;
 
-        var rightLimit = Math.Min(
-            accessibleBounds.Right - groupWidth,
-            strip.Right - Math.Max(0, rightReserve) - groupWidth);
+        // rightReserve anchors the default (offsetX = 0) position clear of the host's window
+        // controls, while clamping keeps explicit user offsets anywhere inside the host window.
+        var rightLimit = accessibleBounds.Right - groupWidth;
         var leftLimit = accessibleBounds.Left;
         var topLimit = accessibleBounds.Top;
         var bottomLimit = accessibleBounds.Bottom - pillHeight;

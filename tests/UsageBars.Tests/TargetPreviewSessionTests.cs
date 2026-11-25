@@ -42,7 +42,7 @@ public class TargetPreviewSessionTests
     }
 
     [Fact]
-    public void TargetLevelOrActivityMakesAllCheckedProviderPillsNormal()
+    public void TargetLevelOrActivityMakesUnifiedPreviewPillNormal()
     {
         var draft = BaseDraft(ProviderBinding.Claude, ProviderBinding.Codex) with
         {
@@ -65,12 +65,13 @@ public class TargetPreviewSessionTests
         var factory = new RecordingPreviewPillFactory();
         using var session = NewSession(factory, processTree: () => tree);
         session.Update(draft);
-        Assert.Equal(2, factory.Live.Count());
-        Assert.All(factory.Live, pill => Assert.False(pill.Dimmed));
+        var pill = Assert.Single(factory.Live);
+        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex }, pill.Providers);
+        Assert.False(pill.Dimmed);
     }
 
     [Fact]
-    public void InactiveTargetLevelOrActivityKeepsAllCheckedProviderPillsDimmed()
+    public void InactiveTargetLevelOrActivityKeepsUnifiedPreviewPillDimmed()
     {
         var draft = BaseDraft(ProviderBinding.Claude, ProviderBinding.Codex) with
         {
@@ -90,8 +91,9 @@ public class TargetPreviewSessionTests
         var factory = new RecordingPreviewPillFactory();
         using var session = NewSession(factory);
         session.Update(draft);
-        Assert.Equal(2, factory.Live.Count());
-        Assert.All(factory.Live, pill => Assert.True(pill.Dimmed));
+        var pill = Assert.Single(factory.Live);
+        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex }, pill.Providers);
+        Assert.True(pill.Dimmed);
     }
 
     [Fact]
@@ -119,20 +121,22 @@ public class TargetPreviewSessionTests
     }
 
     [Fact]
-    public void SessionReplacesPreviewPillsAndDisposesExactlyOnce()
+    public void SessionReusesOneUnifiedPreviewPillAndDisposesExactlyOnce()
     {
         var factory = new RecordingPreviewPillFactory();
         using var session = NewSession(factory);
 
         session.Update(ClaudeDraft());
-        var first = Assert.Single(factory.Live);
-        session.Update(CodexDraft());
+        var pill = Assert.Single(factory.Live);
+        Assert.Equal(new[] { ProviderId.Claude }, pill.Providers);
 
-        Assert.Equal(1, first.DisposeCount);
-        Assert.Equal(ProviderId.Codex, Assert.Single(factory.Live).Provider);
+        session.Update(CodexDraft());
+        Assert.Same(pill, Assert.Single(factory.Live));
+        Assert.Equal(new[] { ProviderId.Codex }, pill.Providers);
+
         session.Dispose();
         session.Dispose();
-        Assert.All(factory.Created, pill => Assert.Equal(1, pill.DisposeCount));
+        Assert.All(factory.Created, p => Assert.Equal(1, p.DisposeCount));
     }
 
     [Fact]
@@ -146,20 +150,15 @@ public class TargetPreviewSessionTests
     }
 
     [Fact]
-    public void TwoProvidersReceivePrefixesAndSharedSlots()
+    public void MultipleProvidersRenderInsideOneUnifiedPreviewPill()
     {
         var factory = new RecordingPreviewPillFactory();
         using var session = NewSession(factory);
 
-        session.Update(BaseDraft(ProviderBinding.Claude, ProviderBinding.Codex));
+        session.Update(BaseDraft(ProviderBinding.Antigravity, ProviderBinding.Codex, ProviderBinding.Claude));
 
-        var claude = factory.Live.Single(pill => pill.Provider == ProviderId.Claude);
-        var codex = factory.Live.Single(pill => pill.Provider == ProviderId.Codex);
-        Assert.Equal("C:", claude.Prefix);
-        Assert.Equal("X:", codex.Prefix);
-        Assert.True(claude.GroupWidth > claude.LogicalWidth);
-        Assert.Equal(claude.GroupWidth, codex.GroupWidth);
-        Assert.NotEqual(claude.MemberOffset, codex.MemberOffset);
+        var pill = Assert.Single(factory.Live);
+        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex, ProviderId.Antigravity }, pill.Providers);
     }
 
     [Fact]
@@ -198,7 +197,7 @@ public class TargetPreviewSessionTests
     private static ProcessTree EmptyTree() =>
         ProcessTree.FromMap(new[] { (7u, 1u, "terminal") });
 
-    private static Config EnabledConfig() => new() { EnableClaude = true, EnableCodex = true };
+    private static Config EnabledConfig() => new() { EnableClaude = true, EnableCodex = true, EnableAntigravity = true };
 
     private static TargetDefinition BaseDraft(params ProviderBinding[] providers) =>
         TargetDefinition.Captured("Draft", "terminal", "frame", providers,
@@ -223,9 +222,9 @@ internal sealed class RecordingPreviewPillFactory : ITargetPreviewPillFactory
     public List<RecordingPreviewPill> Created { get; } = new();
     public IEnumerable<RecordingPreviewPill> Live => Created.Where(pill => !pill.IsDisposed);
 
-    public ITargetPreviewPill Create(ProviderId? provider, HostWindowInfo host)
+    public ITargetPreviewPill Create(IReadOnlyList<ProviderId> providers, HostWindowInfo host)
     {
-        var pill = new RecordingPreviewPill(provider, host);
+        var pill = new RecordingPreviewPill(providers, host);
         Created.Add(pill);
         return pill;
     }
@@ -233,36 +232,30 @@ internal sealed class RecordingPreviewPillFactory : ITargetPreviewPillFactory
 
 internal sealed class RecordingPreviewPill : ITargetPreviewPill
 {
-    public RecordingPreviewPill(ProviderId? provider, HostWindowInfo host)
+    public RecordingPreviewPill(IReadOnlyList<ProviderId> providers, HostWindowInfo host)
     {
-        Provider = provider;
+        Providers = providers;
         Host = host;
     }
 
-    public ProviderId? Provider { get; }
+    public IReadOnlyList<ProviderId> Providers { get; private set; }
     public HostWindowInfo Host { get; private set; }
     public double LogicalWidth { get; } = 100;
     public bool IsDisposed { get; private set; }
     public int DisposeCount { get; private set; }
     public bool Dimmed { get; private set; }
-    public string? Prefix { get; private set; }
-    public double GroupWidth { get; private set; }
-    public double MemberOffset { get; private set; }
     public event Action? WidthChanged;
 
     public void Update(
-        HostWindowInfo host, UsageModel model, bool dimmed, List<IntPtr> zOrder, Config config)
+        HostWindowInfo host,
+        IReadOnlyList<(ProviderId? Provider, UsageModel Model)> models,
+        bool dimmed,
+        List<IntPtr> zOrder,
+        Config config)
     {
         Host = host;
+        Providers = models.Where(m => m.Provider.HasValue).Select(m => m.Provider!.Value).ToArray();
         Dimmed = dimmed;
-    }
-
-    public void SetSharedPrefix(string? prefix) => Prefix = prefix;
-
-    public void SetSharedGroup(double groupWidth, double memberOffset)
-    {
-        GroupWidth = groupWidth;
-        MemberOffset = memberOffset;
     }
 
     public void Dispose()

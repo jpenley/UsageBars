@@ -146,6 +146,18 @@ internal sealed class Config
     /// </summary>
     public string CodexTitlePattern { get; set; } = @"(?i)^\s*codex\b|\bcodex\s+(?:cli|session)\b";
 
+    /// <summary>Show Antigravity quotas (from the signed-in <c>agy</c> CLI).</summary>
+    public bool EnableAntigravity { get; set; } = true;
+
+    /// <summary>How often to refresh Antigravity quotas via <c>agy</c>.</summary>
+    public double AntigravityRefreshMinutes { get; set; } = 5;
+
+    /// <summary>Also show the pill on terminals running an Antigravity CLI (<c>agy</c>) session.</summary>
+    public bool AttachToAntigravityTerminals { get; set; } = true;
+
+    /// <summary>Title regex identifying an Antigravity CLI terminal during window capture.</summary>
+    public string AntigravityTitlePattern { get; set; } = @"(?i)^\s*(?:agy|antigravity)\b|\bantigravity\s+cli\b";
+
     // --- Freshness --------------------------------------------------------------
 
     /// <summary>plan-usage-history.json older than this is drawn dimmed.</summary>
@@ -294,6 +306,8 @@ internal sealed class Config
             v => ScrapeIntervalMinutes = v);
         ClampDouble(nameof(CodexRefreshMinutes), CodexRefreshMinutes, 0.25, 1440,
             v => CodexRefreshMinutes = v);
+        ClampDouble(nameof(AntigravityRefreshMinutes), AntigravityRefreshMinutes, 1, 1440,
+            v => AntigravityRefreshMinutes = v);
         ClampDouble(nameof(LowThresholdPct), LowThresholdPct, 0, 100, v => LowThresholdPct = v);
         ClampDouble(nameof(WarnHoursToEmpty), WarnHoursToEmpty, 0, 720, v => WarnHoursToEmpty = v);
         ClampDouble(nameof(InsightsTriggerHours), InsightsTriggerHours, 0, 720,
@@ -332,6 +346,12 @@ internal sealed class Config
         {
             notes.Add($"{nameof(CodexTitlePattern)} is not a valid regex; using the default");
             CodexTitlePattern = new Config().CodexTitlePattern;
+        }
+
+        if (!IsValidRegex(AntigravityTitlePattern))
+        {
+            notes.Add($"{nameof(AntigravityTitlePattern)} is not a valid regex; using the default");
+            AntigravityTitlePattern = new Config().AntigravityTitlePattern;
         }
 
         var placement = PlacementMode?.Trim().ToLowerInvariant();

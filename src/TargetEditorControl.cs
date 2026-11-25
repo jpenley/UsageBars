@@ -15,8 +15,9 @@ internal sealed class TargetEditorControl : UserControl
     private readonly TextBox _name = new();
     private readonly TextBox _application = new() { ReadOnly = true };
     private readonly TextBox _windowClass = new() { ReadOnly = true };
-    private readonly CheckBox _claude = new() { Text = "Claude" };
-    private readonly CheckBox _codex = new() { Text = "Codex" };
+    private readonly CheckBox _claude = new() { Text = "Claude", AutoSize = true };
+    private readonly CheckBox _codex = new() { Text = "Codex", AutoSize = true };
+    private readonly CheckBox _antigravity = new() { Text = "Antigravity", AutoSize = true };
     private readonly TitleRuleEditorControl _title = new();
     private readonly RadioButton _alwaysOpen = new() { Text = "Always while the window is open", AutoSize = true };
     private readonly RadioButton _whenProcessRunning = new()
@@ -77,7 +78,7 @@ internal sealed class TargetEditorControl : UserControl
         AddRow(layout, "Name", _name);
         AddRow(layout, "Application", _application);
         AddRow(layout, "Window class", _windowClass);
-        AddRow(layout, "Providers", ProviderRow(_claude, _codex));
+        AddRow(layout, "Providers", ProviderRow(_claude, _codex, _antigravity));
         AddRow(layout, "Title match", _title);
         AddRow(layout, "Activation", activation);
         AddRow(layout, "Activity processes", _activity);
@@ -136,6 +137,7 @@ internal sealed class TargetEditorControl : UserControl
             _windowClass.Text = model.WindowClass;
             _claude.Checked = model.Claude;
             _codex.Checked = model.Codex;
+            _antigravity.Checked = model.Antigravity;
             _title.CapturedTitle = model.CapturedTitle;
             _title.Rule = model.TitleMatcherEnabled
                 ? new TitleRule(model.TitleKind, model.TitleValue)
@@ -168,7 +170,7 @@ internal sealed class TargetEditorControl : UserControl
         _activity.SetInventory(inventory);
     }
 
-    private static Control ProviderRow(CheckBox claude, CheckBox codex)
+    private static Control ProviderRow(CheckBox claude, CheckBox codex, CheckBox antigravity)
     {
         var panel = new FlowLayoutPanel
         {
@@ -179,6 +181,7 @@ internal sealed class TargetEditorControl : UserControl
         };
         panel.Controls.Add(claude);
         panel.Controls.Add(codex);
+        panel.Controls.Add(antigravity);
         return panel;
     }
 
@@ -187,6 +190,7 @@ internal sealed class TargetEditorControl : UserControl
         _name.TextChanged += (_, _) => RaiseDraftChanged();
         _claude.CheckedChanged += (_, _) => RaiseDraftChanged();
         _codex.CheckedChanged += (_, _) => RaiseDraftChanged();
+        _antigravity.CheckedChanged += (_, _) => RaiseDraftChanged();
         _title.ValueChanged += (_, _) => RaiseDraftChanged();
         _alwaysOpen.CheckedChanged += (_, _) => ChangeActivationMode(alwaysOpen: true);
         _whenProcessRunning.CheckedChanged += (_, _) => ChangeActivationMode(alwaysOpen: false);
@@ -220,6 +224,7 @@ internal sealed class TargetEditorControl : UserControl
         _model.Name = _name.Text;
         _model.Claude = _claude.Checked;
         _model.Codex = _codex.Checked;
+        _model.Antigravity = _antigravity.Checked;
         _model.TitleMatcherEnabled = _title.Rule is not null;
         _model.TitleKind = _title.Rule?.Kind ?? TitleMatchKind.Literal;
         _model.TitleValue = _title.Rule?.Value ?? "";

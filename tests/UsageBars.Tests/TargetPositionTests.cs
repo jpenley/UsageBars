@@ -71,6 +71,27 @@ public class TargetPositionTests
     }
 
     [Fact]
+    public void TopRightPositiveOffsetMovesRightIntoReserveUpToWindowRightEdge()
+    {
+        var strip = new Native.RECT { Left = 100, Top = 50, Right = 1100, Bottom = 90 };
+        var bounds = new Native.RECT { Left = 100, Top = 50, Right = 1100, Bottom = 850 };
+
+        var baseline = OverlayPlacement.Calculate(
+            strip, bounds, pillWidth: 200, pillHeight: 24, rightReserve: 160,
+            offsetX: 0, offsetY: 0, align: PillAlign.Right);
+        var nudgedRight = OverlayPlacement.Calculate(
+            strip, bounds, pillWidth: 200, pillHeight: 24, rightReserve: 160,
+            offsetX: 40, offsetY: 0, align: PillAlign.Right);
+        var clampedRight = OverlayPlacement.Calculate(
+            strip, bounds, pillWidth: 200, pillHeight: 24, rightReserve: 160,
+            offsetX: 500, offsetY: 0, align: PillAlign.Right);
+
+        Assert.Equal(740, baseline!.Value.X);
+        Assert.Equal(780, nudgedRight!.Value.X);
+        Assert.Equal(900, clampedRight!.Value.X);
+    }
+
+    [Fact]
     public void LargeOffsetsAreClampedInsideTheTargetBounds()
     {
         var strip = new Native.RECT { Left = 0, Top = 0, Right = 1000, Bottom = 40 };
@@ -80,7 +101,7 @@ public class TargetPositionTests
             strip, bounds, 200, 24, rightReserve: 160,
             offsetX: 2000, offsetY: -2000, align: PillAlign.Centre);
 
-        Assert.Equal(640, position!.Value.X);
+        Assert.Equal(800, position!.Value.X);
         Assert.Equal(0, position.Value.Y);
     }
 
@@ -127,7 +148,7 @@ public class TargetPositionTests
         Assert.NotNull(codex);
         Assert.Equal(claude!.Value.X + claudeWidth + gap, codex!.Value.X);
         var expectedGroupLeft = offsetX > 0
-            ? strip.Right - rightReserve - groupWidth
+            ? bounds.Right - groupWidth
             : bounds.Left;
         Assert.Equal(expectedGroupLeft, claude.Value.X);
         Assert.Equal(expectedGroupLeft + groupWidth, codex.Value.X + codexWidth);

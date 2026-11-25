@@ -22,18 +22,27 @@ internal static class TargetDefaults
     {
         var revision = 0L;
         TargetDefinition Stamp(TargetDefinition value) => value with { Revision = ++revision };
+        var allProviders = ProviderBinding.All;
+        var allClis = new[] { "claude", "codex", "agy" };
         var result = new List<TargetDefinition>
         {
             Stamp(TargetDefinition.Seeded(
                 "Claude Desktop", "claude", "Chrome_WidgetWin_1",
-                new[] { ProviderBinding.Claude }, TargetPlacementKind.Desktop,
+                allProviders, TargetPlacementKind.Desktop,
                 TargetActivationPolicy.AlwaysWhileOpen, true, 0) with
             {
                 WindowTitle = new(TitleMatchKind.Regex, @"(?s).+"),
             }),
             Stamp(TargetDefinition.Seeded(
                 "Codex / ChatGPT", "ChatGPT", "Chrome_WidgetWin_1",
-                new[] { ProviderBinding.Codex }, TargetPlacementKind.Desktop,
+                allProviders, TargetPlacementKind.Desktop,
+                TargetActivationPolicy.AlwaysWhileOpen, true, 0) with
+            {
+                WindowTitle = new(TitleMatchKind.Regex, @"(?s).+"),
+            }),
+            Stamp(TargetDefinition.Seeded(
+                "Antigravity", "Antigravity", "Chrome_WidgetWin_1",
+                allProviders, TargetPlacementKind.Desktop,
                 TargetActivationPolicy.AlwaysWhileOpen, true, 0) with
             {
                 WindowTitle = new(TitleMatchKind.Regex, @"(?s).+"),
@@ -44,14 +53,19 @@ internal static class TargetDefaults
         {
             result.Add(Stamp(TargetDefinition.Seeded(
                 $"Claude terminal ({className})", null, className,
-                new[] { ProviderBinding.Claude },
+                allProviders,
                 TargetPlacementKind.Terminal, TargetActivationPolicy.RequireActivityProcess,
                 false, 0, new[] { "claude" }) with { Enabled = config.AttachToClaudeCodeTerminals }));
             result.Add(Stamp(TargetDefinition.Seeded(
                 $"Codex terminal ({className})", null, className,
-                new[] { ProviderBinding.Codex },
+                allProviders,
                 TargetPlacementKind.Terminal, TargetActivationPolicy.RequireActivityProcess,
                 false, 0, new[] { "codex" }) with { Enabled = config.AttachToCodexTerminals }));
+            result.Add(Stamp(TargetDefinition.Seeded(
+                $"Antigravity terminal ({className})", null, className,
+                allProviders,
+                TargetPlacementKind.Terminal, TargetActivationPolicy.RequireActivityProcess,
+                false, 0, new[] { "agy" }) with { Enabled = config.AttachToAntigravityTerminals }));
         }
 
         foreach (var (process, frame, height) in new[]
@@ -63,21 +77,21 @@ internal static class TargetDefaults
         {
             result.Add(Stamp(TargetDefinition.Seeded(
                 $"{process} IDE", process, frame,
-                new[] { ProviderBinding.Claude, ProviderBinding.Codex },
+                allProviders,
                 TargetPlacementKind.Ide,
                 config.AlwaysShowOnIdes
                     ? TargetActivationPolicy.AlwaysWhileOpen
                     : TargetActivationPolicy.RequireActivityProcess,
                 false, height,
-                config.AlwaysShowOnIdes ? null : new[] { "claude", "codex" })));
+                config.AlwaysShowOnIdes ? null : allClis)));
         }
 
         foreach (var process in GenericEditors)
             result.Add(Stamp(TargetDefinition.Seeded(
                 $"{process} editor", process, null,
-                new[] { ProviderBinding.Claude, ProviderBinding.Codex },
+                allProviders,
                 TargetPlacementKind.Terminal, TargetActivationPolicy.RequireActivityProcess,
-                true, 0, new[] { "claude", "codex" })));
+                true, 0, allClis)));
 
         return result;
     }

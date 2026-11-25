@@ -233,7 +233,7 @@ public class TargetStoreTests
         Assert.Equal(PillAnchor.BottomCenter, store.Targets.Single(x => x.Id == ide).Anchor);
 
         Assert.True(store.SetEnabled(desktop, false).Success);
-        Assert.Contains("\"Version\": 3", storage.Text);
+        Assert.Contains("\"Version\": 4", storage.Text);
         Assert.Contains("\"Anchor\": \"TopRight\"", storage.Text);
 
         var reloaded = TargetStore.Load(storage, new Config());
@@ -318,7 +318,7 @@ public class TargetStoreTests
         var target = Assert.Single(store.Targets);
         Assert.Equal(TargetActivationPolicy.RequireActivityProcess, target.Activation);
         Assert.Equal(new[] { "claude", "codex" }, target.ActivityProcessNames);
-        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex },
+        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex, ProviderId.Antigravity },
             target.Providers.Select(provider => provider.Provider).Order().ToArray());
         Assert.Null(target.WindowTitle);
     }
@@ -439,7 +439,7 @@ public class TargetStoreTests
         var store = TargetStore.Load(storage, new Config());
 
         Assert.True(store.SetEnabled(id, false).Success);
-        Assert.Contains("\"Version\": 3", storage.Text);
+        Assert.Contains("\"Version\": 4", storage.Text);
         Assert.Contains("\"ActivityProcessNames\"", storage.Text);
         Assert.DoesNotContain("CliProcessName", storage.Text);
         Assert.DoesNotContain("ActivityTitlePattern", storage.Text);
@@ -535,6 +535,8 @@ public class TargetStoreTests
 
         var target = Assert.Single(store.Targets);
         Assert.Equal(new[] { "claude", "codex" }, target.ActivityProcessNames);
+        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Codex, ProviderId.Antigravity },
+            target.Providers.Select(provider => provider.Provider).Order().ToArray());
     }
 
     private static string ValidTargetJson(Guid id, string name) =>

@@ -107,8 +107,13 @@ internal sealed class TargetResolver
             : null;
     }
 
-    private static bool ProviderEnabled(ProviderId provider, Config config) =>
-        provider == ProviderId.Claude ? config.EnableClaude : config.EnableCodex;
+    internal static bool ProviderEnabled(ProviderId provider, Config config) => provider switch
+    {
+        ProviderId.Claude => config.EnableClaude,
+        ProviderId.Codex => config.EnableCodex,
+        ProviderId.Antigravity => config.EnableAntigravity,
+        _ => false,
+    };
 
     private static HostKind KindFor(TargetPlacementKind placement) => placement switch
     {

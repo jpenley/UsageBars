@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace UsageBars;
 
@@ -37,13 +38,21 @@ internal sealed class ProviderPill : IDisposable
 
     // Retained so a rebuilt window can be restored to exactly what the old one was showing.
     private UsageModel _model = new();
+    private IReadOnlyList<(ProviderId? Provider, UsageModel Model)> _models =
+        Array.Empty<(ProviderId?, UsageModel)>();
+    private IReadOnlyList<ProviderId> _providers = Array.Empty<ProviderId>();
     private bool _lightTheme = true;
     private Config? _config;
     private bool? _previewDimmed;
+    private bool _placing;
 
     public ProviderTarget Target { get; }
 
     public UsageModel Model => _model;
+
+    public IReadOnlyList<ProviderId> Providers => _providers;
+
+    public string? ActionUrl => _window.View.ActionUrl ?? _model.ActionUrl;
 
     /// <summary>The window this pill belongs to. Never null and never changes identity.</summary>
     public HostWindowInfo Host { get; private set; }
@@ -120,10 +129,11 @@ internal sealed class ProviderPill : IDisposable
     /// <summary>Raised when the window had to be rebuilt, so the controller can re-log its state.</summary>
     public event Action<ProviderPill>? Rebuilt;
 
-    public ProviderPill(ProviderTarget target, HostWindowInfo host)
+    public ProviderPill(ProviderTarget target, HostWindowInfo host, IReadOnlyList<ProviderId>? providers = null)
     {
         Target = target;
         Host = host;
+        _providers = providers ?? new[] { target.Id };
         _window = CreateWindow();
     }
 
@@ -138,7 +148,10 @@ internal sealed class ProviderPill : IDisposable
 
     private void OnActionClicked() => ActionClicked?.Invoke(this);
 
-    private void OnWidthChanged() => WidthChanged?.Invoke(this);
+    private void OnWidthChanged()
+    {
+        if (!_placing) WidthChanged?.Invoke(this);
+    }
 
     /// <summary>
     /// An owned window is destroyed along with its owner, so closing the host app takes the pill
@@ -164,8 +177,12 @@ internal sealed class ProviderPill : IDisposable
         _window.Show();
         _window.SetShown(false);
         if (_config is not null)
-            _window.View.Update(
-                _model, _lightTheme, _previewDimmed);
+        {
+            if (_models.Count > 0)
+                _window.View.Update(_models, _lightTheme, _previewDimmed);
+            else
+                _window.View.Update(_model, _lightTheme, _previewDimmed, Target.Id);
+        }
 
         Rebuilt?.Invoke(this);
     }
@@ -178,20 +195,40 @@ internal sealed class ProviderPill : IDisposable
         _window.SetShown(false);
     }
 
-    public void UpdateModel(UsageModel model, bool lightTheme, Config config)
+    public void UpdateModel(UsageModel model, bool lightTheme, Config config, ProviderId? providerOverride = null)
     {
+        var provider = providerOverride ?? Target.Id;
         _model = model;
+        _models = new (ProviderId?, UsageModel)[] { (provider, model) };
+        _providers = new[] { provider };
         _lightTheme = lightTheme;
         _config = config;
-        _window.View.Update(model, lightTheme, _previewDimmed);
+        _window.View.Update(_models, lightTheme, _previewDimmed);
+    }
+
+    public void UpdateModels(
+        IReadOnlyList<(ProviderId? Provider, UsageModel Model)> models,
+        bool lightTheme,
+        Config config)
+    {
+        _models = models;
+        _providers = models.Where(m => m.Provider.HasValue).Select(m => m.Provider!.Value).ToArray();
+        _model = models.Count > 0 ? models[0].Model : new UsageModel();
+        _lightTheme = lightTheme;
+        _config = config;
+        _window.View.Update(models, lightTheme, _previewDimmed);
     }
 
     public void SetPreviewDimmed(bool? dimmed)
     {
         _previewDimmed = dimmed;
         if (_config is not null)
-            _window.View.Update(
-                _model, _lightTheme, _previewDimmed);
+        {
+            if (_models.Count > 0)
+                _window.View.Update(_models, _lightTheme, _previewDimmed);
+            else
+                _window.View.Update(_model, _lightTheme, _previewDimmed, Target.Id);
+        }
     }
 
     /// <summary>Advances the reset marker even when the provider's reading has not changed.</summary>
@@ -308,6 +345,12 @@ internal sealed class ProviderPill : IDisposable
 
         var align = Alignment();
         var rightReserve = bottomEdge ? 0 : config.RightReservePx;
+
+        // Flow rows vs columns to stay within this window's measured title-bar or status-bar height.
+        var stripHeightLogical = scale > 0 ? strip.Height / scale : strip.Height;
+        _placing = true;
+        try { _window.View.SetMaxHeight(Math.Max(15.0, stripHeightLogical - 2.0)); }
+        finally { _placing = false; }
 
         // A strip too narrow to hold the pill without colliding with the host's own window
         // controls is left alone entirely — drawing over the close button is worse than not

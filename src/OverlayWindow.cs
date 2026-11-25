@@ -99,7 +99,7 @@ internal sealed class OverlayWindow : Window
         Focusable = false;
 
         Width = View.LogicalWidth;
-        Height = OverlayView.LogicalHeight;
+        Height = View.LogicalHeight;
 
         // Off-screen until the first placement, so there's no flash at (0,0).
         // Visibility is deliberately NOT set here: assigning Hidden before Show() desyncs WPF's
@@ -256,7 +256,7 @@ internal sealed class OverlayWindow : Window
             groupWidthLogical > 0 ? memberOffsetLogical : 0,
             scale);
         var width = scaledGroup.MemberWidth;
-        var height = (int)Math.Round(OverlayView.LogicalHeight * scale);
+        var height = (int)Math.Round(View.LogicalHeight * scale);
         var reserve = (int)Math.Round(rightReserveLogical * scale);
 
         var position = OverlayPlacement.CalculateGroupMember(

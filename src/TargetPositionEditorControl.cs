@@ -1,5 +1,6 @@
 using System;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -25,6 +26,7 @@ internal sealed class TargetPositionEditorControl : UserControl
         Maximum = TargetPositionRules.MaximumOffset,
         Increment = TargetPositionRules.NudgeSize,
     };
+    private (PillAnchor Anchor, int OffsetX, int OffsetY) _lastNotified;
 
     public TargetPositionEditorControl()
     {
@@ -81,9 +83,12 @@ internal sealed class TargetPositionEditorControl : UserControl
         layout.RowCount++;
         Controls.Add(layout);
 
-        _anchor.SelectedIndexChanged += (_, _) => ValueChanged?.Invoke(this, EventArgs.Empty);
-        _x.ValueChanged += (_, _) => ValueChanged?.Invoke(this, EventArgs.Empty);
-        _y.ValueChanged += (_, _) => ValueChanged?.Invoke(this, EventArgs.Empty);
+        _lastNotified = (Anchor, OffsetX, OffsetY);
+        _anchor.SelectedIndexChanged += (_, _) => NotifyIfChanged();
+        _x.ValueChanged += (_, _) => NotifyIfChanged();
+        _y.ValueChanged += (_, _) => NotifyIfChanged();
+        _x.TextChanged += (_, _) => NotifyIfChanged();
+        _y.TextChanged += (_, _) => NotifyIfChanged();
     }
 
     public event EventHandler? ValueChanged;
@@ -97,20 +102,55 @@ internal sealed class TargetPositionEditorControl : UserControl
 
     public int OffsetX
     {
-        get => decimal.ToInt32(_x.Value);
-        set => _x.Value = TargetPositionRules.ClampOffset(value);
+        get => ReadOffset(_x);
+        set => WriteOffset(_x, value);
     }
 
     public int OffsetY
     {
-        get => decimal.ToInt32(_y.Value);
-        set => _y.Value = TargetPositionRules.ClampOffset(value);
+        get => ReadOffset(_y);
+        set => WriteOffset(_y, value);
     }
 
     public void ResetOffsets()
     {
         OffsetX = 0;
         OffsetY = 0;
+    }
+
+    private void NotifyIfChanged()
+    {
+        if (_anchor.SelectedItem is not AnchorOption) return;
+        var current = (Anchor, OffsetX, OffsetY);
+        if (current == _lastNotified) return;
+        _lastNotified = current;
+        ValueChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static int ReadOffset(NumericUpDown control) =>
+        TryParseOffset(control.Text, out var parsed)
+            ? parsed
+            : decimal.ToInt32(control.Value);
+
+    private static void WriteOffset(NumericUpDown control, int value)
+    {
+        var clamped = TargetPositionRules.ClampOffset(value);
+        control.Value = clamped;
+        var text = clamped.ToString(CultureInfo.CurrentCulture);
+        if (!string.Equals(control.Text, text, StringComparison.Ordinal))
+            control.Text = text;
+    }
+
+    private static bool TryParseOffset(string? text, out int offset)
+    {
+        if (int.TryParse(text?.Trim(), NumberStyles.Integer, CultureInfo.CurrentCulture, out var parsed))
+        {
+            offset = TargetPositionRules.ClampOffset(parsed);
+            return true;
+        }
+
+        offset = 0;
+        return false;
     }
 
     private static Button DirectionButton(string accessibleName, string text, Action click)

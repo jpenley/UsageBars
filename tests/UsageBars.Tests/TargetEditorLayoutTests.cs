@@ -53,6 +53,27 @@ public class TargetEditorLayoutTests
     }
 
     [Fact]
+    public void PositionEditorReportsTypedOffsetBeforeFocusLeaves()
+    {
+        using var control = new TargetPositionEditorControl();
+        var xInput = FindControls<NumericUpDown>(control).First();
+        var observed = new List<int>();
+        control.ValueChanged += (_, _) => observed.Add(control.OffsetX);
+
+        xInput.Text = "-";
+        Assert.Equal(0, control.OffsetX);
+        Assert.Empty(observed);
+
+        xInput.Text = "-24";
+        Assert.Equal(-24, control.OffsetX);
+        Assert.Equal(new[] { -24 }, observed);
+
+        control.ResetOffsets();
+        Assert.Equal(0, control.OffsetX);
+        Assert.Equal("0", xInput.Text);
+    }
+
+    [Fact]
     public void EditorShowsProviderCheckboxesWithoutProviderSpecificProcessEditors()
     {
         using var control = new TargetEditorControl(

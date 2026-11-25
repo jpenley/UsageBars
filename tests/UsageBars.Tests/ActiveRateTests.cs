@@ -228,6 +228,45 @@ public class ActiveRateTests
         Assert.False(LowCreditTrigger.Evaluate(
             CreditWith(5, Now.AddHours(1)), new Config(), Now, null).Fire);
     }
+
+    [Fact]
+    public void ActivityScanOnlyRunsForLiveSingleMeterCreditOrSpendBars()
+    {
+        var dollarCredit = new UsageModel
+        {
+            Bars = new[] { new UsageBar("C", 18) { Spend = new SpendAmount(287, 350) } },
+        };
+        var percentCredit = new UsageModel { Bars = new[] { new UsageBar("C", 88) } };
+        var spendLimit = new UsageModel { Bars = new[] { new UsageBar("spend", 40) } };
+        var dollarCustomLabel = new UsageModel
+        {
+            Bars = new[] { new UsageBar("usage", 50) { Spend = new SpendAmount(100, 200) } },
+        };
+        var staleCredit = dollarCredit with { Stale = true };
+        var subscriptionWindows = new UsageModel
+        {
+            Bars = new[] { new UsageBar("5h", 72), new UsageBar("7d", 44) },
+        };
+        var singleSubscriptionWindow = new UsageModel
+        {
+            Bars = new[] { new UsageBar("7d", 9) },
+        };
+        var placeholder = new UsageModel
+        {
+            Bars = new[] { new UsageBar("usage", null) },
+            Stale = true,
+        };
+
+        Assert.True(OverlayController.NeedsActivityScan(dollarCredit));
+        Assert.True(OverlayController.NeedsActivityScan(percentCredit));
+        Assert.True(OverlayController.NeedsActivityScan(spendLimit));
+        Assert.True(OverlayController.NeedsActivityScan(dollarCustomLabel));
+
+        Assert.False(OverlayController.NeedsActivityScan(staleCredit));
+        Assert.False(OverlayController.NeedsActivityScan(subscriptionWindows));
+        Assert.False(OverlayController.NeedsActivityScan(singleSubscriptionWindow));
+        Assert.False(OverlayController.NeedsActivityScan(placeholder));
+    }
 }
 
 public class ActivityLogTests : IDisposable

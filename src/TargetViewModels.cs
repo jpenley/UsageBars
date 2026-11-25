@@ -21,6 +21,7 @@ internal sealed class TargetEditorModel
         CapturedTitle = draft.CapturedTitle;
         Claude = draft.Definition.Providers.Any(binding => binding.Provider == ProviderId.Claude);
         Codex = draft.Definition.Providers.Any(binding => binding.Provider == ProviderId.Codex);
+        Antigravity = draft.Definition.Providers.Any(binding => binding.Provider == ProviderId.Antigravity);
         TitleMatcherEnabled = draft.Definition.WindowTitle is not null;
         TitleKind = draft.Definition.WindowTitle?.Kind ?? TitleMatchKind.Literal;
         TitleValue = draft.Definition.WindowTitle?.Value ?? "";
@@ -45,6 +46,7 @@ internal sealed class TargetEditorModel
     public IReadOnlyList<string> ActivityProcessNames => _activityProcessNames;
     public bool Claude { get; set; }
     public bool Codex { get; set; }
+    public bool Antigravity { get; set; }
     public TargetPlacementKind Placement { get; set; }
     public TargetActivationPolicy Activation => _activityProcessNames.Count == 0
         ? TargetActivationPolicy.AlwaysWhileOpen
@@ -68,6 +70,7 @@ internal sealed class TargetEditorModel
         Name = definition.Name;
         Claude = definition.Providers.Any(binding => binding.Provider == ProviderId.Claude);
         Codex = definition.Providers.Any(binding => binding.Provider == ProviderId.Codex);
+        Antigravity = definition.Providers.Any(binding => binding.Provider == ProviderId.Antigravity);
         TitleMatcherEnabled = definition.WindowTitle is not null;
         TitleKind = definition.WindowTitle?.Kind ?? TitleMatchKind.Literal;
         TitleValue = definition.WindowTitle?.Value ?? "";
@@ -93,7 +96,7 @@ internal sealed class TargetEditorModel
     {
         var errors = new List<string>();
         if (string.IsNullOrWhiteSpace(Name)) errors.Add("Name is required.");
-        if (!Claude && !Codex) errors.Add("Choose at least one provider.");
+        if (!Claude && !Codex && !Antigravity) errors.Add("Choose at least one provider.");
         if (TitleMatcherEnabled && string.IsNullOrWhiteSpace(TitleValue))
             errors.Add("Title matcher value is required.");
         if (TitleMatcherEnabled && !Enum.IsDefined(TitleKind))
@@ -115,6 +118,7 @@ internal sealed class TargetEditorModel
         var providers = new List<ProviderBinding>();
         if (Claude) providers.Add(new ProviderBinding(ProviderId.Claude));
         if (Codex) providers.Add(new ProviderBinding(ProviderId.Codex));
+        if (Antigravity) providers.Add(new ProviderBinding(ProviderId.Antigravity));
 
         return _original with
         {
@@ -164,13 +168,8 @@ internal sealed record TargetRow(
 
     public static TargetRow From(TargetDefinition target, IReadOnlyList<TargetDefinition> targets)
     {
-        var providers = target.Providers.Select(x => x.Provider).Distinct().Order() switch
-        {
-            var values when values.SequenceEqual(new[] { ProviderId.Claude, ProviderId.Codex })
-                => "Claude + Codex",
-            var values when values.SequenceEqual(new[] { ProviderId.Claude }) => "Claude",
-            _ => "Codex",
-        };
+        var providers = string.Join(" + ", target.Providers
+            .Select(x => x.Provider).Distinct().Order());
         var match = string.Join(" · ", new[]
         {
             target.ProcessName is null ? null : $"process={target.ProcessName}",

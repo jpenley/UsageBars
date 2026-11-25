@@ -30,9 +30,8 @@ internal static class TargetPreviewEvaluator
         var providers = draft.Providers
             .Select(binding => binding.Provider)
             .Distinct()
-            .Where(provider => provider == ProviderId.Claude
-                ? config.EnableClaude
-                : config.EnableCodex)
+            .Where(provider => TargetResolver.ProviderEnabled(provider, config))
+            .OrderBy(provider => provider)
             .ToList();
         if (providers.Count == 0) return new(TargetPreviewState.Neutral, null, providers);
         if (!draft.Enabled)
@@ -63,17 +62,20 @@ internal static class TargetPreviewEvaluator
 
 internal interface ITargetPreviewPill : IDisposable
 {
-    ProviderId? Provider { get; }
+    IReadOnlyList<ProviderId> Providers { get; }
     double LogicalWidth { get; }
     event Action? WidthChanged;
-    void Update(HostWindowInfo host, UsageModel model, bool dimmed, List<IntPtr> zOrder, Config config);
-    void SetSharedPrefix(string? prefix);
-    void SetSharedGroup(double groupWidth, double memberOffset);
+    void Update(
+        HostWindowInfo host,
+        IReadOnlyList<(ProviderId? Provider, UsageModel Model)> models,
+        bool dimmed,
+        List<IntPtr> zOrder,
+        Config config);
 }
 
 internal interface ITargetPreviewPillFactory
 {
-    ITargetPreviewPill Create(ProviderId? provider, HostWindowInfo host);
+    ITargetPreviewPill Create(IReadOnlyList<ProviderId> providers, HostWindowInfo host);
 }
 
 internal interface ITargetPreviewSession : IDisposable
@@ -87,11 +89,13 @@ internal interface ITargetPreviewSession : IDisposable
     void WindowClosed();
 }
 
+/// <summary>
+/// Previews a target draft on a single window using the exact same unified multi-provider pill
+/// drawn by the live overlay, so editing placement, offsets, and providers reflects the real size
+/// and stack-then-column layout.
+/// </summary>
 internal sealed class TargetPreviewSession : ITargetPreviewSession
 {
-    private enum PreviewPillKey { Neutral, Claude, Codex }
-
-    private const double SharedGap = 12;
     private WindowSnapshot _window;
     private readonly ITargetPreviewPillFactory _factory;
     private readonly Func<ProviderId, UsageModel> _modelFor;
@@ -99,11 +103,11 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
     private readonly Func<ProcessTree> _processTree;
     private readonly Func<List<IntPtr>> _zOrder;
     private readonly uint _ownPid;
-    private readonly Dictionary<PreviewPillKey, ITargetPreviewPill> _pills = new();
+    private ITargetPreviewPill? _pill;
     private TargetDefinition? _draft;
     private bool _disposed;
     private bool _windowClosed;
-    private bool _layingOut;
+    private bool _updating;
 
     public TargetPreviewSession(
         WindowSnapshot window,
@@ -134,34 +138,25 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
         _draft = draft;
         Evaluation = TargetPreviewEvaluator.Evaluate(
             draft, _window, _processTree(), _config, _ownPid);
-        var desired = Evaluation.PreviewProviders.Count == 0
-            ? new[] { PreviewPillKey.Neutral }
-            : Evaluation.PreviewProviders.Select(KeyFor).ToArray();
 
-        foreach (var key in _pills.Keys.Where(key => !desired.Contains(key)).ToList())
-            Remove(key);
+        var providers = Evaluation.PreviewProviders;
+        var models = providers.Count == 0
+            ? new (ProviderId?, UsageModel)[] { (null, NeutralModel()) }
+            : providers.Select(provider => ((ProviderId?)provider, _modelFor(provider))).ToArray();
 
-        var zOrder = _zOrder();
+        var host = HostFor(draft, providers.Count > 0 ? providers[0] : ProviderId.Claude);
         var dimmed = Evaluation.State != TargetPreviewState.Normal;
-        foreach (var key in desired)
+        var zOrder = _zOrder();
+
+        if (_pill is null)
         {
-            var provider = ProviderFor(key);
-            var host = HostFor(draft, provider);
-            if (!_pills.TryGetValue(key, out var pill))
-            {
-                pill = _factory.Create(provider, host);
-                pill.WidthChanged += Reflow;
-                _pills.Add(key, pill);
-            }
-            pill.Update(host, ModelFor(provider), dimmed, zOrder, _config);
+            _pill = _factory.Create(providers, host);
+            _pill.WidthChanged += OnPillWidthChanged;
         }
 
-        Reflow();
-        foreach (var key in desired)
-        {
-            var provider = ProviderFor(key);
-            _pills[key].Update(HostFor(draft, provider), ModelFor(provider), dimmed, zOrder, _config);
-        }
+        _updating = true;
+        try { _pill.Update(host, models, dimmed, zOrder, _config); }
+        finally { _updating = false; }
     }
 
     public void Update(WindowSnapshot latestWindow, TargetDefinition draft)
@@ -181,7 +176,7 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
     {
         if (_disposed || _windowClosed) return;
         _windowClosed = true;
-        DisposePills();
+        DisposePill();
         Evaluation = new(
             TargetPreviewState.WindowClosed,
             "Preview unavailable—the selected window closed.",
@@ -190,11 +185,16 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
                 ?? Array.Empty<ProviderId>());
     }
 
-    private UsageModel ModelFor(ProviderId? provider) => provider is { } actual
-        ? _modelFor(actual)
-        : new UsageModel { Bars = new[] { new UsageBar("Preview", null) }, Stale = true };
+    private void OnPillWidthChanged()
+    {
+        if (_updating || _disposed || _windowClosed || _draft is null) return;
+        Update(_draft);
+    }
 
-    private HostWindowInfo HostFor(TargetDefinition draft, ProviderId? provider) => new(
+    private static UsageModel NeutralModel() =>
+        new() { Bars = new[] { new UsageBar("Preview", null) }, Stale = true };
+
+    private HostWindowInfo HostFor(TargetDefinition draft, ProviderId primaryProvider) => new(
         _window.Hwnd,
         draft.Placement switch
         {
@@ -203,7 +203,7 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
             _ => HostKind.Terminal,
         },
         draft.Name,
-        provider ?? ProviderId.Claude,
+        primaryProvider,
         HostEvidence.Open,
         draft.StatusBarHeight,
         draft.Id,
@@ -211,68 +211,19 @@ internal sealed class TargetPreviewSession : ITargetPreviewSession
         draft.OffsetX,
         draft.OffsetY);
 
-    private void Reflow()
+    private void DisposePill()
     {
-        if (_layingOut) return;
-        _layingOut = true;
-        try
-        {
-            if (_pills.TryGetValue(PreviewPillKey.Claude, out var claude)
-                && _pills.TryGetValue(PreviewPillKey.Codex, out var codex)
-                && _draft is { } draft)
-            {
-                claude.SetSharedPrefix("C:");
-                codex.SetSharedPrefix("X:");
-                var layout = SharedPillLayout.Create(
-                    HostFor(draft, ProviderId.Claude), claude.LogicalWidth,
-                    HostFor(draft, ProviderId.Codex), codex.LogicalWidth,
-                    SharedGap);
-                if (layout is { } shared)
-                {
-                    claude.SetSharedGroup(shared.First.GroupWidth, shared.First.MemberOffset);
-                    codex.SetSharedGroup(shared.Second.GroupWidth, shared.Second.MemberOffset);
-                }
-            }
-            else
-            {
-                foreach (var pill in _pills.Values)
-                {
-                    pill.SetSharedPrefix(null);
-                    pill.SetSharedGroup(0, 0);
-                }
-            }
-        }
-        finally { _layingOut = false; }
-    }
-
-    private static PreviewPillKey KeyFor(ProviderId provider) =>
-        provider == ProviderId.Claude ? PreviewPillKey.Claude : PreviewPillKey.Codex;
-
-    private static ProviderId? ProviderFor(PreviewPillKey key) => key switch
-    {
-        PreviewPillKey.Claude => ProviderId.Claude,
-        PreviewPillKey.Codex => ProviderId.Codex,
-        _ => null,
-    };
-
-    private void Remove(PreviewPillKey key)
-    {
-        var pill = _pills[key];
-        pill.WidthChanged -= Reflow;
-        pill.Dispose();
-        _pills.Remove(key);
-    }
-
-    private void DisposePills()
-    {
-        foreach (var key in _pills.Keys.ToList()) Remove(key);
+        if (_pill is null) return;
+        _pill.WidthChanged -= OnPillWidthChanged;
+        _pill.Dispose();
+        _pill = null;
     }
 
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
-        DisposePills();
+        DisposePill();
     }
 }
 
@@ -282,8 +233,8 @@ internal sealed class ProviderPreviewPillFactory : ITargetPreviewPillFactory
 
     public ProviderPreviewPillFactory(Func<bool> lightTheme) => _lightTheme = lightTheme;
 
-    public ITargetPreviewPill Create(ProviderId? provider, HostWindowInfo host) =>
-        new ProviderPreviewPill(provider, host, _lightTheme);
+    public ITargetPreviewPill Create(IReadOnlyList<ProviderId> providers, HostWindowInfo host) =>
+        new ProviderPreviewPill(providers, host, _lightTheme);
 }
 
 internal sealed class ProviderPreviewPill : ITargetPreviewPill
@@ -291,36 +242,35 @@ internal sealed class ProviderPreviewPill : ITargetPreviewPill
     private readonly ProviderPill _pill;
     private readonly Func<bool> _lightTheme;
 
-    public ProviderPreviewPill(ProviderId? provider, HostWindowInfo host, Func<bool> lightTheme)
+    public ProviderPreviewPill(
+        IReadOnlyList<ProviderId> providers, HostWindowInfo host, Func<bool> lightTheme)
     {
-        Provider = provider;
         _lightTheme = lightTheme;
-        var target = provider switch
-        {
-            ProviderId.Codex => ProviderTarget.Codex,
-            ProviderId.Claude => ProviderTarget.Claude,
-            _ => new ProviderTarget(ProviderId.Claude, "Preview"),
-        };
-        _pill = new ProviderPill(target, host);
+        var target = providers.Count == 1
+            ? ProviderTarget.For(providers[0])
+            : providers.Count > 1
+                ? new ProviderTarget(providers[0], string.Join("+", providers))
+                : new ProviderTarget(ProviderId.Claude, "Preview");
+        _pill = new ProviderPill(target, host, providers);
         _pill.WidthChanged += OnWidthChanged;
         _pill.Show();
     }
 
-    public ProviderId? Provider { get; }
+    public IReadOnlyList<ProviderId> Providers => _pill.Providers;
     public double LogicalWidth => _pill.LogicalWidth;
     public event Action? WidthChanged;
 
     public void Update(
-        HostWindowInfo host, UsageModel model, bool dimmed, List<IntPtr> zOrder, Config config)
+        HostWindowInfo host,
+        IReadOnlyList<(ProviderId? Provider, UsageModel Model)> models,
+        bool dimmed,
+        List<IntPtr> zOrder,
+        Config config)
     {
         _pill.SetPreviewDimmed(dimmed);
-        _pill.UpdateModel(model, _lightTheme(), config);
+        _pill.UpdateModels(models, _lightTheme(), config);
         _pill.Update(host, zOrder, config, moveInProgress: false);
     }
-
-    public void SetSharedPrefix(string? prefix) => _pill.SetSharedPrefix(prefix);
-    public void SetSharedGroup(double groupWidth, double memberOffset) =>
-        _pill.SetSharedGroup(groupWidth, memberOffset);
 
     private void OnWidthChanged(ProviderPill _) => WidthChanged?.Invoke();
 

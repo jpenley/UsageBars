@@ -14,11 +14,16 @@ public class TargetDefaultsTests
             target.Name == "Claude terminal (CASCADIA_HOSTING_WINDOW_CLASS)");
         var codex = Assert.Single(targets, target =>
             target.Name == "Codex terminal (CASCADIA_HOSTING_WINDOW_CLASS)");
+        var agy = Assert.Single(targets, target =>
+            target.Name == "Antigravity terminal (CASCADIA_HOSTING_WINDOW_CLASS)");
 
-        Assert.Equal(new[] { ProviderId.Claude }, claude.Providers.Select(binding => binding.Provider));
+        var all = new[] { ProviderId.Claude, ProviderId.Codex, ProviderId.Antigravity };
+        Assert.Equal(all, claude.Providers.Select(binding => binding.Provider));
         Assert.Equal(new[] { "claude" }, claude.ActivityProcessNames);
-        Assert.Equal(new[] { ProviderId.Codex }, codex.Providers.Select(binding => binding.Provider));
+        Assert.Equal(all, codex.Providers.Select(binding => binding.Provider));
         Assert.Equal(new[] { "codex" }, codex.ActivityProcessNames);
+        Assert.Equal(all, agy.Providers.Select(binding => binding.Provider));
+        Assert.Equal(new[] { "agy" }, agy.ActivityProcessNames);
     }
 
     [Fact]
@@ -38,7 +43,7 @@ public class TargetDefaultsTests
             target => target.Name == "rider64 IDE");
 
         Assert.Equal(TargetActivationPolicy.RequireActivityProcess, ide.Activation);
-        Assert.Equal(new[] { "claude", "codex" }, ide.ActivityProcessNames);
+        Assert.Equal(new[] { "agy", "claude", "codex" }, ide.ActivityProcessNames);
     }
 
     [Theory]

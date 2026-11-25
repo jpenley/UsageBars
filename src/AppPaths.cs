@@ -122,6 +122,12 @@ internal static class AppPaths
     public static string ProbeDir => Path.Combine(DataRoot, "probe");
 
     /// <summary>
+    /// Isolated working directory and session-only settings for the hidden Antigravity
+    /// (<c>agy</c>) quota probe.
+    /// </summary>
+    public static string AntigravityProbeDir => Path.Combine(DataRoot, "probe-agy");
+
+    /// <summary>
     /// Working directory and generated scripts for the low-credit /insights terminal. Kept apart
     /// from the user's projects so the fresh Claude instance never starts inside one.
     /// </summary>

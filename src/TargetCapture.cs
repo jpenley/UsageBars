@@ -143,7 +143,7 @@ internal static class ProviderInference
         if (TryDesktopProvider(window, out var desktopProvider))
         {
             notes.Add($"Detected {desktopProvider.Provider} desktop identity.");
-            return Draft(window, new[] { new ProviderBinding(desktopProvider.Provider) }, TargetPlacementKind.Desktop,
+            return Draft(window, ProviderBinding.All, TargetPlacementKind.Desktop,
                 TargetActivationPolicy.AlwaysWhileOpen, 0, notes, titleMatcher);
         }
 
@@ -187,6 +187,7 @@ internal static class ProviderInference
         {
             new ProviderDetection(ProviderId.Claude, "claude", config.TerminalTitlePattern),
             new ProviderDetection(ProviderId.Codex, "codex", config.CodexTitlePattern),
+            new ProviderDetection(ProviderId.Antigravity, "agy", config.AntigravityTitlePattern),
         };
 
     private static List<TargetDefinition> HighestSpecificityAlwaysOpen(
@@ -218,6 +219,13 @@ internal static class ProviderInference
             && window.ProcessName.Equals("ChatGPT", StringComparison.OrdinalIgnoreCase))
         {
             provider = new(ProviderId.Codex, "codex", null);
+            return true;
+        }
+
+        if (window.ClassName.Equals("Chrome_WidgetWin_1", StringComparison.OrdinalIgnoreCase)
+            && window.ProcessName.Equals("Antigravity", StringComparison.OrdinalIgnoreCase))
+        {
+            provider = new(ProviderId.Antigravity, "agy", null);
             return true;
         }
 

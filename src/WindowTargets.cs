@@ -49,6 +49,9 @@ internal sealed record ProviderBinding
 
     public static ProviderBinding Claude => new(ProviderId.Claude);
     public static ProviderBinding Codex => new(ProviderId.Codex);
+    public static ProviderBinding Antigravity => new(ProviderId.Antigravity);
+
+    public static ProviderBinding[] All => new[] { Claude, Codex, Antigravity };
 }
 
 internal sealed record WindowSnapshot(
@@ -123,7 +126,7 @@ internal sealed record TargetDefinition
             errors.Add("providers must be unique");
         foreach (var binding in Providers)
         {
-            if (binding.Provider is not (ProviderId.Claude or ProviderId.Codex))
+            if (binding.Provider is not (ProviderId.Claude or ProviderId.Codex or ProviderId.Antigravity))
                 errors.Add($"unsupported provider: {binding.Provider}");
         }
         if (Activation == TargetActivationPolicy.AlwaysWhileOpen && ActivityProcessNames.Count != 0)

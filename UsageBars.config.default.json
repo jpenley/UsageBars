@@ -21,6 +21,12 @@
   // and the server also pushes updates in between polls.
   "CodexRefreshMinutes": 2,
 
+  // Show Antigravity quotas from the signed-in agy CLI.
+  "EnableAntigravity": true,
+
+  // How often to refresh Antigravity quotas via agy (~5s hidden probe, no LLM tokens).
+  "AntigravityRefreshMinutes": 5,
+
   // --- Reset times ------------------------------------------------------------
 
   // Reset deadlines are MEASURED, not configured:
@@ -157,6 +163,8 @@
   "AttachToClaudeCodeTerminals": true,
   // FIRST-RUN SEED INPUT ONLY; see AttachToClaudeCodeTerminals above.
   "AttachToCodexTerminals": true,
+  // FIRST-RUN SEED INPUT ONLY; see AttachToClaudeCodeTerminals above.
+  "AttachToAntigravityTerminals": true,
 
   // CAPTURE-TIME DETECTION HINTS. Whenever Add captures a new terminal window,
   // these patterns can help infer Claude or Codex for the draft. They are not
@@ -176,6 +184,7 @@
   // capture-time evidence; Codex terminals are normally detected by process ancestry.
   "TerminalTitlePattern": "(?i)^\\s*[✳⠀-⣿]|\\bclaude code\\b|^\\s*claude\\s*$",
   "CodexTitlePattern": "(?i)^\\s*codex\\b|\\bcodex\\s+(?:cli|session)\\b",
+  "AntigravityTitlePattern": "(?i)^\\s*(?:agy|antigravity)\\b|\\bantigravity\\s+cli\\b",
 
   // --- Placement --------------------------------------------------------------
 

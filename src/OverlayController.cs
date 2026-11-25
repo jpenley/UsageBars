@@ -62,24 +62,25 @@ internal sealed class OverlayController : IDisposable
     private readonly WindowPicker _windowPicker;
     private readonly TargetManagerCoordinator _targetManagerCoordinator;
 
+    private readonly record struct PillSlotKey(IntPtr Hwnd, PillAnchor Anchor, int OffsetX, int OffsetY);
+
+    private readonly record struct PillSlot(HostWindowInfo PrimaryHost, IReadOnlyList<ProviderId> Providers);
+
     /// <summary>
-    /// Every live pill, keyed by provider and the window it belongs to.
-    ///
-    /// One per qualifying window rather than one per provider: a Claude Code session open in three
-    /// terminals puts a pill on all three, and each is disposed when its own window closes. The
-    /// dictionary is the whole lifecycle — anything in <c>wanted</c> and not here is created,
-    /// anything here and not in <c>wanted</c> is retired.
+    /// Every live unified pill, keyed by window and anchor slot. Multiple providers targeting the
+    /// same window slot share a single pill window whose bars stack vertically and wrap into
+    /// columns to fit the host strip height.
     /// </summary>
-    private readonly Dictionary<(ProviderId Provider, IntPtr Hwnd), ProviderPill> _pills = new();
-    private bool _applyingSharedLayout;
+    private readonly Dictionary<PillSlotKey, ProviderPill> _pills = new();
     private bool _disposed;
 
     /// <summary>
-    /// The per-provider models. Held here rather than on the pills because every pill of a
-    /// provider draws the same numbers — the usage is the account's, not the window's.
+    /// The per-provider models. Held here rather than on the pills because every pill draws the
+    /// same account numbers.
     /// </summary>
     private UsageModel _claudeModel = new();
     private UsageModel _codexModel = new();
+    private UsageModel _antigravityModel = new();
 
     // ---- Claude sources ----
     private UsageSnapshot _file = UsageSnapshot.Failed("reading...");
@@ -106,6 +107,12 @@ internal sealed class OverlayController : IDisposable
 
     // ---- Codex source ----
     private readonly CodexMonitor _codex;
+
+    // ---- Antigravity source ----
+    private AntigravitySnapshot? _antigravity;
+    private DateTime _lastAntigravityReadUtc = DateTime.MinValue;
+    private bool _antigravityReadInFlight;
+    private int _antigravityFailures;
 
     /// <summary>
     /// Readings accumulated for windows that report no history of their own. The Codex app-server
@@ -177,6 +184,8 @@ internal sealed class OverlayController : IDisposable
         {
             BeginFileRead(force: true);
             BeginScrape(force: true);
+            BeginActivityScan(force: true);
+            BeginAntigravityRead(force: true);
             _codex.RequestRefresh();
         };
         _tray.ExitRequested += () =>
@@ -193,7 +202,7 @@ internal sealed class OverlayController : IDisposable
     public void Start()
     {
         _log.Record("app", "lifecycle", "started", DiagLevel.Info, "started",
-            $"portable={AppPaths.IsPortable} claude={_config.EnableClaude} codex={_config.EnableCodex}");
+            $"portable={AppPaths.IsPortable} claude={_config.EnableClaude} codex={_config.EnableCodex} antigravity={_config.EnableAntigravity}");
 
         foreach (var note in _config.Adjustments)
             _log.Record("app", "config", "adjusted", DiagLevel.Warn, "clamped", note);
@@ -202,7 +211,6 @@ internal sealed class OverlayController : IDisposable
 
         // Pills are created by the first Track(), once the qualifying windows are known.
         Rebuild();
-        BeginActivityScan(force: true);
 
         _trackTimer.Tick += (_, _) => Track();
         _trackTimer.Start();
@@ -218,6 +226,7 @@ internal sealed class OverlayController : IDisposable
             BeginFileRead(force: false);
             BeginScrape(force: false);
             BeginActivityScan();
+            BeginAntigravityRead(force: false);
             foreach (var pill in _pills.Values) pill.RefreshTime();
         };
         _dataTimer.Start();
@@ -235,6 +244,7 @@ internal sealed class OverlayController : IDisposable
             Native.WINEVENT_OUTOFCONTEXT | Native.WINEVENT_SKIPOWNPROCESS);
 
         if (_config.EnableCodex) _codex.Start();
+        if (_config.EnableAntigravity) BeginAntigravityRead(force: true);
 
         // The scrape is deliberately not started here: it is kicked off by the first file read
         // completing, and only when that read finds nothing.
@@ -246,17 +256,21 @@ internal sealed class OverlayController : IDisposable
     private void Rebuild()
     {
         RecordCodexHistory();
+        RecordAntigravityHistory();
 
         _claudeModel = UsageModel.Build(_file, _scraped, _history, _config, _activity.Days);
         _codexModel = UsageModel.BuildCodex(
             _codex.Latest, _codex.CodexInstalled, _codex.Error, _config, _barHistory);
+        _antigravityModel = UsageModel.BuildAntigravity(
+            _antigravity, _antigravity?.Installed ?? true, _antigravity?.Error, _config, _barHistory);
 
-        foreach (var (key, pill) in _pills)
-            pill.UpdateModel(ModelFor(key.Provider), _lightTheme, _config);
+        foreach (var pill in _pills.Values)
+            pill.UpdateModels(ModelsFor(pill.Providers), _lightTheme, _config);
 
         _tray.Update(
             _config.EnableClaude ? _claudeModel : null,
-            _config.EnableCodex ? _codexModel : null);
+            _config.EnableCodex ? _codexModel : null,
+            _config.EnableAntigravity ? _antigravityModel : null);
 
         if (_config.EnableClaude) CheckLowCredit();
     }
@@ -273,12 +287,25 @@ internal sealed class OverlayController : IDisposable
     private static readonly TimeSpan ActivityScanInterval = TimeSpan.FromMinutes(2);
 
     /// <summary>
+    /// Whether the current Claude model is actively displaying a single-meter credit/spend bar
+    /// whose spend rate depends on Claude Code transcript activity.
+    /// </summary>
+    internal static bool NeedsActivityScan(UsageModel model) =>
+        !model.Stale
+        && model.Bars.Count == 1
+        && model.Bars[0] is { RemainingPct: not null } bar
+        && (bar.Spend is not null || bar.Label is "C" or "spend");
+
+    /// <summary>
     /// Re-reads what the transcripts gained, off the UI thread, and rebuilds the models when the
-    /// per-day spans moved. Throttled: it only stats the files when nothing has changed.
+    /// per-day spans moved. Only runs while displaying a live single-meter credit/spend bar;
+    /// subscription percent windows never use transcript activity. Throttled: it only stats the
+    /// files when nothing has changed.
     /// </summary>
     private void BeginActivityScan(bool force = false)
     {
         if (!_config.EnableClaude || _activityScanInFlight) return;
+        if (!_fileReadCompleted || !NeedsActivityScan(_claudeModel)) return;
         if (!force && DateTime.UtcNow - _lastActivityScanUtc < ActivityScanInterval) return;
 
         _activityScanInFlight = true;
@@ -335,8 +362,38 @@ internal sealed class OverlayController : IDisposable
         });
     }
 
-    private UsageModel ModelFor(ProviderId provider) =>
-        provider == ProviderId.Codex ? _codexModel : _claudeModel;
+    private UsageModel ModelFor(ProviderId provider) => provider switch
+    {
+        ProviderId.Claude => _claudeModel,
+        ProviderId.Codex => _codexModel,
+        ProviderId.Antigravity => _antigravityModel,
+        _ => _claudeModel,
+    };
+
+    private IReadOnlyList<(ProviderId? Provider, UsageModel Model)> ModelsFor(
+        IReadOnlyList<ProviderId> providers) =>
+        providers.Select(provider => ((ProviderId?)provider, ModelFor(provider))).ToArray();
+
+    private void RecordAntigravityHistory()
+    {
+        if (_antigravity is not { HasValues: true } snapshot) return;
+
+        var kept = false;
+        foreach (var (bucketId, label) in new[]
+        {
+            ("gemini-5h", "5h"),
+            ("gemini-weekly", "7d"),
+            ("3p-5h", "3p 5h"),
+            ("3p-weekly", "3p 7d"),
+        })
+        {
+            if (snapshot.Bucket(bucketId) is not { RemainingPct: { } rem }) continue;
+            kept |= _barHistory.Record(
+                UsageModel.AntigravityHistoryKey(label), 100 - rem, snapshot.ReadAt);
+        }
+
+        if (kept) _barHistory.Save();
+    }
 
     /// <summary>
     /// Records the Codex windows' current utilization, so a rate can be measured for bars the
@@ -377,8 +434,8 @@ internal sealed class OverlayController : IDisposable
             Application.Current?.Dispatcher.BeginInvoke(() =>
             {
                 Rebuild();
-                foreach (var (key, pill) in _pills)
-                    if (key.Provider == ProviderId.Codex) RepositionOne(pill);
+                foreach (var pill in _pills.Values)
+                    if (pill.Providers.Contains(ProviderId.Codex)) RepositionOne(pill);
             });
         }
         catch (Exception)
@@ -435,7 +492,7 @@ internal sealed class OverlayController : IDisposable
 
     private void OpenActionUrl(ProviderPill pill)
     {
-        var url = pill.Model.ActionUrl;
+        var url = pill.ActionUrl;
         if (string.IsNullOrWhiteSpace(url)) return;
 
         // Install documentation is the only pill action. Keep the scheme check at the shell
@@ -472,27 +529,34 @@ internal sealed class OverlayController : IDisposable
 
         var moving = MoveInProgress;
 
-        // Every (provider, window) pair that should have a pill on it right now.
-        var wanted = _targetResolver.FindAll(candidates, _targets.Targets, _config)
+        // Resolve every (provider, window) pair, drop preview-suppressed windows, then merge
+        // providers sharing the same window & position slot into a single unified pill.
+        var wantedByProvider = _targetResolver.FindAll(candidates, _targets.Targets, _config)
             .ToDictionary(host => (host.Provider, host.Hwnd));
 
         _targetManagerCoordinator.RefreshLiveState();
         TargetPreviewSuppression.RemovePreviewWindows(
-            wanted, _targetManagerCoordinator.SuppressedHwnds);
+            wantedByProvider, _targetManagerCoordinator.SuppressedHwnds);
 
-        RetirePillsMissingFrom(wanted);
-        CreatePillsFor(wanted);
+        var wantedSlots = wantedByProvider.Values
+            .GroupBy(host => new PillSlotKey(host.Hwnd, host.Anchor, host.OffsetX, host.OffsetY))
+            .ToDictionary(
+                group => group.Key,
+                group =>
+                {
+                    var ordered = group.OrderBy(host => host.Provider).ToList();
+                    var providers = ordered.Select(host => host.Provider).Distinct().ToArray();
+                    return new PillSlot(ordered[0], providers);
+                });
 
-        // Which windows carry two pills is answerable before placing, now that the full set is
-        // known — so the side-by-side arrangement is applied first and nothing ever draws overlapped
-        // even for a single frame.
-        ApplySharedHostLayout(wanted);
+        RetirePillsMissingFrom(wantedSlots);
+        SyncPillsFor(wantedSlots);
 
         foreach (var (key, pill) in _pills)
         {
             var visibleBefore = pill.IsVisible;
 
-            pill.Update(wanted[key], zOrder, _config, moving);
+            pill.Update(wantedSlots[key].PrimaryHost, zOrder, _config, moving);
 
             if (pill.IsVisible != visibleBefore)
             {
@@ -509,20 +573,14 @@ internal sealed class OverlayController : IDisposable
         SyncLocationHooks();
     }
 
-    /// <summary>
-    /// Disposes pills whose window no longer qualifies — it closed, the session under it ended, or
-    /// the provider was turned off. This is the "kill them when the owner goes away" half of the
-    /// lifecycle, and it is driven entirely by the window no longer appearing in the resolved set
-    /// rather than by trying to catch a destroy notification.
-    /// </summary>
-    private void RetirePillsMissingFrom(Dictionary<(ProviderId, IntPtr), HostWindowInfo> wanted)
+    private void RetirePillsMissingFrom(Dictionary<PillSlotKey, PillSlot> wanted)
     {
-        List<(ProviderId, IntPtr)>? gone = null;
+        List<PillSlotKey>? gone = null;
 
         foreach (var (key, _) in _pills)
         {
             if (wanted.ContainsKey(key)) continue;
-            (gone ??= new List<(ProviderId, IntPtr)>()).Add(key);
+            (gone ??= new List<PillSlotKey>()).Add(key);
         }
 
         if (gone is null) return;
@@ -539,119 +597,36 @@ internal sealed class OverlayController : IDisposable
         }
     }
 
-    private void CreatePillsFor(Dictionary<(ProviderId, IntPtr), HostWindowInfo> wanted)
+    private void SyncPillsFor(Dictionary<PillSlotKey, PillSlot> wanted)
     {
-        foreach (var (key, host) in wanted)
+        foreach (var (key, slot) in wanted)
         {
-            if (_pills.ContainsKey(key)) continue;
+            if (_pills.TryGetValue(key, out var existing))
+            {
+                if (!existing.Providers.SequenceEqual(slot.Providers))
+                    existing.UpdateModels(ModelsFor(slot.Providers), _lightTheme, _config);
+                continue;
+            }
 
-            var target = key.Item1 == ProviderId.Codex ? ProviderTarget.Codex : ProviderTarget.Claude;
-            var pill = new ProviderPill(target, host);
+            var host = slot.PrimaryHost;
+            var target = slot.Providers.Count == 1
+                ? ProviderTarget.For(slot.Providers[0])
+                : new ProviderTarget(slot.Providers[0], string.Join("+", slot.Providers));
+            var pill = new ProviderPill(target, host, slot.Providers);
 
             pill.ActionClicked += OpenActionUrl;
-            // Content width changes when the bar count or labels change; re-place to stay put.
-            pill.WidthChanged += ReflowSharedHost;
+            pill.WidthChanged += RepositionOne;
             pill.Rebuilt += p => _log.Record(p.Target.Name, "window", "rebuilt", DiagLevel.Info,
                 "recreated", "owner window was destroyed; pill rebuilt");
 
             pill.Show();
-            pill.UpdateModel(ModelFor(key.Item1), _lightTheme, _config);
+            pill.UpdateModels(ModelsFor(slot.Providers), _lightTheme, _config);
             _pills[key] = pill;
             _lifecycle?.PillActivity(_pills.Count, $"created {target.Name}; host=0x{host.Hwnd.ToInt64():X}");
 
-            // Evidence is logged because without it a misattribution is invisible: a pill on a
-            // window looks the same whether it belongs there or merely shares the host's process.
             _log.Record(target.Name, "pill", "created", DiagLevel.Info, "attached",
                 $"{host.Kind} by {host.Evidence}: {host.Description} " +
                 $"(host 0x{host.Hwnd.ToInt64():X}, pill 0x{pill.WindowHandle.ToInt64():X})");
-        }
-    }
-
-    /// <summary>Clear space between two pills sharing one title bar, in logical pixels.</summary>
-    private const double SharedPillGap = 8;
-
-    /// <summary>
-    /// Arranges pills side by side on any window that carries both providers', and restores plain
-    /// single-pill layout everywhere else.
-    ///
-    /// A shared window is routine rather than exotic. Windows Terminal runs all of its windows in
-    /// one process, and a CLI session is credited per process, so with both CLIs running every WT
-    /// window qualifies for both providers. Undetected they draw exactly on top of each other.
-    ///
-    /// Claude goes on the left and Codex on the right, matching the "C … X …" order of the tray
-    /// tooltip.
-    ///
-    /// How the pair is arranged follows the alignment the host would give a lone pill. Right-
-    /// aligned, the outer one stops on the reserve and the inner one steps left of it. Centred —
-    /// which is what a Rider status bar and a desktop frame get — the two straddle the centre, so
-    /// the *pair* is centred rather than one of them being centred and the other pushed off it.
-    /// </summary>
-    private void ApplySharedHostLayout(
-        IReadOnlyDictionary<(ProviderId Provider, IntPtr Hwnd), HostWindowInfo> currentHosts)
-    {
-        _applyingSharedLayout = true;
-        try
-        {
-            // Prefixes for every pill first, because the marker widens the pill it is on and group
-            // geometry is measured off the final widths. Interleaving the two leaves a gap exactly
-            // the width of an "X:" marker. Resolver output is passed in explicitly so a save or
-            // winner change cannot accidentally group against ProviderPill.Host from the prior tick.
-            foreach (var (key, pill) in _pills)
-            {
-                var companionKey =
-                    (key.Provider == ProviderId.Codex
-                        ? ProviderId.Claude
-                        : ProviderId.Codex, key.Hwnd);
-                var shares = _pills.ContainsKey(companionKey)
-                             && SharedPillLayout.SharesPosition(
-                                 currentHosts[key], currentHosts[companionKey]);
-                pill.SetSharedPrefix(
-                    shares ? (key.Provider == ProviderId.Codex ? "X:" : "C:") : null);
-            }
-
-            // Driven from the Claude side: a pair is exactly one Claude pill and one Codex pill on
-            // the same window, so iterating one provider visits each pair once. Both receive
-            // coordinates inside one combined rectangle; the placement layer anchors, nudges,
-            // fits, and clamps that rectangle once before adding either member offset.
-            foreach (var (key, pill) in _pills)
-            {
-                if (key.Provider != ProviderId.Claude) continue;
-
-                if (!_pills.TryGetValue((ProviderId.Codex, key.Hwnd), out var codex))
-                {
-                    pill.SetSharedGroup(0, 0);
-                    continue;
-                }
-
-                var layout = SharedPillLayout.Create(
-                    currentHosts[key], pill.LogicalWidth,
-                    currentHosts[(ProviderId.Codex, key.Hwnd)], codex.LogicalWidth,
-                    SharedPillGap);
-                if (layout is not { } shared)
-                {
-                    pill.SetSharedGroup(0, 0);
-                    codex.SetSharedGroup(0, 0);
-                }
-                else
-                {
-                    pill.SetSharedGroup(shared.First.GroupWidth, shared.First.MemberOffset);
-                    codex.SetSharedGroup(shared.Second.GroupWidth, shared.Second.MemberOffset);
-                }
-            }
-
-            // Codex pills with no Claude companion; the loop above never reaches them.
-            foreach (var (key, pill) in _pills)
-            {
-                if (key.Provider != ProviderId.Codex) continue;
-                if (!_pills.TryGetValue((ProviderId.Claude, key.Hwnd), out var claude)
-                    || !SharedPillLayout.SharesPosition(
-                        currentHosts[key], currentHosts[(ProviderId.Claude, key.Hwnd)]))
-                    pill.SetSharedGroup(0, 0);
-            }
-        }
-        finally
-        {
-            _applyingSharedLayout = false;
         }
     }
 
@@ -672,23 +647,6 @@ internal sealed class OverlayController : IDisposable
     /// <summary>Repositions a single pill, for events that only affect one of them.</summary>
     private void RepositionOne(ProviderPill pill) =>
         pill.Reposition(ZOrder.TopLevelWindows(), _config, MoveInProgress);
-
-    /// <summary>
-    /// A member width changes the group's width, so recompute and reposition every pill on that
-    /// HWND. Prefix changes happen inside the layout pass and are deliberately coalesced into the
-    /// caller's following placement loop.
-    /// </summary>
-    private void ReflowSharedHost(ProviderPill changed)
-    {
-        if (_applyingSharedLayout) return;
-
-        var currentHosts = _pills.ToDictionary(pair => pair.Key, pair => pair.Value.Host);
-        ApplySharedHostLayout(currentHosts);
-        var zOrder = ZOrder.TopLevelWindows();
-        foreach (var pill in _pills.Values)
-            if (pill.HostHandle == changed.HostHandle)
-                pill.Reposition(zOrder, _config, MoveInProgress);
-    }
 
     /// <summary>
     /// Keeps one location hook per host process. Scoped to the hosts' processes so dragging
@@ -808,6 +766,7 @@ internal sealed class OverlayController : IDisposable
                     snapshot.Error ?? $"{snapshot.SourceLabel}: 5h={snapshot.FiveHourUsedPct} 7d={snapshot.SevenDayUsedPct}; sampleAt={snapshot.SampleTime:O}");
 
                 Rebuild();
+                BeginActivityScan();
 
                 // A frozen Desktop file must not prevent a fresh all-device reading.
                 if (UsageModel.NeedsClaudeFallback(snapshot, _config)) BeginScrape(force: firstRead);
@@ -875,6 +834,65 @@ internal sealed class OverlayController : IDisposable
                         $"{result.Error} (attempt {_scrapeFailures})", elapsedMs);
                 }
                 Rebuild();
+                BeginActivityScan();
+            });
+        });
+    }
+
+    /// <summary>
+    /// Reads Antigravity quotas via a hidden session-only <c>agy --settings</c> statusLine probe.
+    /// </summary>
+    private void BeginAntigravityRead(bool force)
+    {
+        if (!_config.EnableAntigravity || _antigravityReadInFlight) return;
+
+        var interval = TimeSpan.FromMinutes(Math.Max(1, _config.AntigravityRefreshMinutes));
+        if (_antigravityFailures > 0)
+        {
+            var backoff = RetrySchedule.ForAttempt(_antigravityFailures - 1, interval);
+            if (backoff > interval) interval = backoff;
+        }
+
+        if (!force && DateTime.UtcNow - _lastAntigravityReadUtc < interval) return;
+
+        _antigravityReadInFlight = true;
+        _lastAntigravityReadUtc = DateTime.UtcNow;
+        var dispatcher = Dispatcher.CurrentDispatcher;
+
+        Task.Run(() =>
+        {
+            var started = Stopwatch.StartNew();
+            AntigravitySnapshot result;
+            try { result = AntigravityUsageReader.Read(); }
+            catch (Exception ex) { result = AntigravitySnapshot.Failed(ex.Message); }
+            var elapsedMs = started.Elapsed.TotalMilliseconds;
+
+            dispatcher.BeginInvoke(() =>
+            {
+                _antigravityReadInFlight = false;
+
+                if (result.HasValues)
+                {
+                    _antigravityFailures = 0;
+                    _antigravity = result;
+                    var summary = string.Join(", ", result.Buckets.Values
+                        .Where(b => !b.Disabled && b.RemainingPct is not null)
+                        .Select(b => $"{b.Id}: {b.RemainingPct:0.#}% left"));
+                    _log.Record("antigravity", "statusline-probe", "read", DiagLevel.Info, "succeeded",
+                        $"{summary}; readAt={result.ReadAt:O}", elapsedMs);
+                }
+                else
+                {
+                    _antigravityFailures++;
+                    if (_antigravity is not { HasValues: true } || !result.Installed)
+                        _antigravity = result;
+                    _log.Record("antigravity", "statusline-probe", "failed", DiagLevel.Warn, "failed",
+                        $"{result.Error} (attempt {_antigravityFailures})", elapsedMs);
+                }
+
+                Rebuild();
+                foreach (var pill in _pills.Values)
+                    if (pill.Providers.Contains(ProviderId.Antigravity)) RepositionOne(pill);
             });
         });
     }
@@ -1063,6 +1081,28 @@ internal sealed class OverlayController : IDisposable
             text.AppendLine($"  {Redact.Paths(candidate)}");
         text.AppendLine();
 
+        text.AppendLine("== Antigravity ==");
+        AppendModel(text, _config.EnableAntigravity ? _antigravityModel : null, "(disabled)");
+        text.AppendLine();
+        text.AppendLine("-- agy statusLine probe --");
+        text.AppendLine($"cli path       : {Redact.Paths(AntigravityCli.Find() ?? "(not installed)")}");
+        text.AppendLine($"installed      : {_antigravity?.Installed.ToString() ?? "(unknown)"}");
+        text.AppendLine($"plan           : {_antigravity?.PlanTier ?? "(none)"}");
+        text.AppendLine($"read at        : {_antigravity?.ReadAt.ToString("yyyy-MM-dd HH:mm:ss") ?? "(never)"}");
+        text.AppendLine($"error          : {_antigravity?.Error ?? "(none)"}");
+        text.AppendLine($"refresh (min)  : {_config.AntigravityRefreshMinutes} · consecutive failures {_antigravityFailures}");
+        if (_antigravity is { Buckets.Count: > 0 } agySnap)
+        {
+            foreach (var bucket in agySnap.Buckets.Values.OrderBy(b => b.Id, StringComparer.OrdinalIgnoreCase))
+            {
+                text.AppendLine(
+                    $"  bucket       : {bucket.Id} — " +
+                    $"{(bucket.RemainingPct is { } r ? $"{r:0.##}% left" : "--")}" +
+                    $" · resets {Describe(bucket.EffectiveResetsAt)}");
+            }
+        }
+        text.AppendLine();
+
         TargetDiagnostics.Append(text, _targets, _targetResolver.LastRejections);
         text.AppendLine("== target positions ==");
         foreach (var target in _targets.Targets)
@@ -1090,6 +1130,7 @@ internal sealed class OverlayController : IDisposable
         text.AppendLine($"move in progress: {MoveInProgress}");
         text.AppendLine($"claude terminals: {_config.AttachToClaudeCodeTerminals} · pattern '{_config.TerminalTitlePattern}'");
         text.AppendLine($"codex terminals : {_config.AttachToCodexTerminals} · pattern '{_config.CodexTitlePattern}'");
+        text.AppendLine($"agy terminals   : {_config.AttachToAntigravityTerminals} · pattern '{_config.AntigravityTitlePattern}'");
         text.AppendLine($"data root      : {Redact.Paths(AppPaths.DataRoot)} (portable={AppPaths.IsPortable})");
         if (AppPaths.PortableRejectedBecause is { } why)
             text.AppendLine($"portable note  : {Redact.Paths(why)}");

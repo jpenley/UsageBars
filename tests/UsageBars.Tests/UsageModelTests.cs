@@ -223,16 +223,33 @@ public class ProviderTargetTests
     private static IReadOnlyList<TargetDefinition> Defaults(Config? config = null) =>
         TargetDefaults.Create(config ?? new Config());
 
-    private static TargetDefinition DesktopTarget(ProviderId provider) =>
-        Assert.Single(Defaults(), target =>
+    private static TargetDefinition DesktopTarget(ProviderId provider)
+    {
+        var process = provider switch
+        {
+            ProviderId.Claude => "claude",
+            ProviderId.Codex => "ChatGPT",
+            ProviderId.Antigravity => "Antigravity",
+            _ => throw new ArgumentOutOfRangeException(nameof(provider)),
+        };
+        return Assert.Single(Defaults(), target =>
             target.Placement == TargetPlacementKind.Desktop
-            && target.Providers.Any(binding => binding.Provider == provider));
+            && target.ProcessName == process);
+    }
 
-    private static TargetDefinition TerminalTarget(ProviderId provider, Config? config = null) =>
-        Assert.Single(Defaults(config), target =>
+    private static TargetDefinition TerminalTarget(ProviderId provider, Config? config = null)
+    {
+        var cli = provider switch
+        {
+            ProviderId.Claude => "claude",
+            ProviderId.Codex => "codex",
+            ProviderId.Antigravity => "agy",
+            _ => throw new ArgumentOutOfRangeException(nameof(provider)),
+        };
+        return Assert.Single(Defaults(config), target =>
             target.WindowClass == "CASCADIA_HOSTING_WINDOW_CLASS"
-            && target.Providers.Any(binding => binding.Provider == provider))
-            ;
+            && target.ActivityProcessNames.SequenceEqual(new[] { cli }));
+    }
 
     private static WindowSnapshot Window(string processName) =>
         new(IntPtr.Zero, 0, processName, "Chrome_WidgetWin_1", "Application", true);
@@ -245,7 +262,9 @@ public class ProviderTargetTests
         // The Codex desktop app's process is ChatGPT.exe while its CLI is codex.exe — unlike
         // Claude, where both are "claude". Conflating them would put the Codex pill on nothing.
         Assert.Equal("ChatGPT", DesktopTarget(ProviderId.Codex).ProcessName);
+        Assert.Equal("Antigravity", DesktopTarget(ProviderId.Antigravity).ProcessName);
         Assert.Equal(new[] { "codex" }, TerminalTarget(ProviderId.Codex).ActivityProcessNames);
+        Assert.Equal(new[] { "agy" }, TerminalTarget(ProviderId.Antigravity).ActivityProcessNames);
     }
 
     [Fact]
@@ -255,19 +274,19 @@ public class ProviderTargetTests
         {
             AttachToClaudeCodeTerminals = false,
             AttachToCodexTerminals = true,
+            AttachToAntigravityTerminals = false,
         };
 
-        var claudeTerminal = Assert.Single(Defaults(config), target =>
-            target.WindowClass == "CASCADIA_HOSTING_WINDOW_CLASS"
-            && target.Providers.Any(binding => binding.Provider == ProviderId.Claude));
-        var codexTerminal = Assert.Single(Defaults(config), target =>
-            target.WindowClass == "CASCADIA_HOSTING_WINDOW_CLASS"
-            && target.Providers.Any(binding => binding.Provider == ProviderId.Codex));
+        var claudeTerminal = TerminalTarget(ProviderId.Claude, config);
+        var codexTerminal = TerminalTarget(ProviderId.Codex, config);
+        var agyTerminal = TerminalTarget(ProviderId.Antigravity, config);
 
         Assert.False(claudeTerminal.Enabled);
         Assert.True(codexTerminal.Enabled);
+        Assert.False(agyTerminal.Enabled);
         Assert.Equal(new[] { "claude" }, claudeTerminal.ActivityProcessNames);
         Assert.Equal(new[] { "codex" }, codexTerminal.ActivityProcessNames);
+        Assert.Equal(new[] { "agy" }, agyTerminal.ActivityProcessNames);
     }
 
     /// <summary>

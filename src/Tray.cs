@@ -130,14 +130,19 @@ internal sealed class Tray : IDisposable
     /// <summary>
     /// Refreshes the tray icon's compact hover text. Disabled providers are omitted.
     /// </summary>
-    public void Update(UsageModel? claude, UsageModel? codex)
+    public void Update(UsageModel? claude, UsageModel? codex, UsageModel? antigravity = null)
     {
         var parts = new List<string>();
         if (claude is not null) parts.Add("C " + Compact(claude));
         if (codex is not null) parts.Add("X " + Compact(codex));
+        if (antigravity is not null) parts.Add("A " + Compact(antigravity));
 
         // NotifyIcon.Text is capped at 63 characters, and Windows silently truncates past that.
-        var tip = "UsageBars — " + (parts.Count == 0 ? "no providers enabled" : string.Join("  ", parts));
+        var tip = parts.Count == 0
+            ? "UsageBars — no providers enabled"
+            : "UsageBars — " + string.Join(" · ", parts);
+        if (tip.Length > 63 && parts.Count > 0)
+            tip = string.Join(" · ", parts);
         _icon.Text = tip.Length <= 63 ? tip : tip[..63];
     }
 

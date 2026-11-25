@@ -68,7 +68,7 @@ internal interface ITargetRuleStore
 
 internal sealed class TargetStore : ITargetRuleStore
 {
-    private const int CurrentVersion = 3;
+    private const int CurrentVersion = 4;
     private const int OldestSupportedVersion = 1;
     private static readonly JsonSerializerOptions ReadOptions = new()
     {
@@ -145,7 +145,7 @@ internal sealed class TargetStore : ITargetRuleStore
             {
                 try
                 {
-                    if (documentVersion == CurrentVersion)
+                    if (documentVersion >= 3)
                     {
                         if (!element.TryGetProperty(nameof(TargetDefinition.Anchor), out _))
                             throw new JsonException("target anchor is missing");
@@ -161,13 +161,25 @@ internal sealed class TargetStore : ITargetRuleStore
                     if (documentVersion == 2
                         && !element.TryGetProperty(nameof(TargetDefinition.Anchor), out _))
                         throw new JsonException("target anchor is missing");
-                    var migrated = documentVersion < CurrentVersion
+                    var migrated = documentVersion < 3
                         ? TargetDocumentV2Migration.Read(element, documentVersion, ReadOptions)
                         : new MigratedTarget(
                             element.Deserialize<TargetDefinition>(ReadOptions)
                                 ?? throw new JsonException("target is null"),
                             null);
                     var target = migrated.Definition;
+                    if (documentVersion < CurrentVersion && target.Providers is { Count: > 0 })
+                    {
+                        // Version 4 adds all providers (Claude, Codex, Antigravity) to every
+                        // target so the unified pill always shows every provider's headroom.
+                        var merged = target.Providers.ToList();
+                        foreach (var binding in ProviderBinding.All)
+                        {
+                            if (merged.All(existing => existing.Provider != binding.Provider))
+                                merged.Add(binding);
+                        }
+                        target = target with { Providers = merged };
+                    }
                     var warning = migrated.Warning ?? target.MigrationWarning;
                     if (warning is not null)
                         issues.Add(FormatMigrationWarningIssue(target.Id, warning));

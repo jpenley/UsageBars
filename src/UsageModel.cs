@@ -14,6 +14,9 @@ internal enum PillAction
 
     /// <summary>No Codex CLI, so the app-server can't be reached: link to the install docs.</summary>
     InstallCodex,
+
+    /// <summary>No Antigravity CLI, so quotas can't be queried: link to the install docs.</summary>
+    InstallAntigravity,
 }
 
 internal sealed record UsageBar(string Label, double? RemainingPct)
@@ -411,6 +414,129 @@ internal sealed record UsageModel
             ResetBasis = snapshot.NextReset is null
                 ? "not reported by the app-server"
                 : "reported by the app-server",
+            WarnReason = low
+                ? $"at or below floor of {config.LowThresholdPct:0}%"
+                : $"lowest window at {(lowest is double.MaxValue ? 0 : lowest):0}% remaining",
+        };
+    }
+
+    public static string AntigravityHistoryKey(string label) => "antigravity:" + label;
+
+    public static UsageModel BuildAntigravity(
+        AntigravitySnapshot? snapshot,
+        bool installed,
+        string? error,
+        Config config,
+        BarHistory? history = null)
+    {
+        if (!installed)
+        {
+            return new UsageModel
+            {
+                Bars = new List<UsageBar> { new("agy", null) },
+                Stale = true,
+                Action = PillAction.InstallAntigravity,
+                ActionUrl = AntigravityCli.InstallUrl,
+                SourceText = "Antigravity CLI not installed",
+                StatusText = "Antigravity CLI not installed — click ! to install",
+            };
+        }
+
+        if (snapshot is not { HasValues: true })
+        {
+            return new UsageModel
+            {
+                Bars = new List<UsageBar> { new("agy", null) },
+                Stale = true,
+                SourceText = "agy statusLine",
+                StatusText = error ?? snapshot?.Error ?? "no Antigravity usage data available",
+            };
+        }
+
+        var now = DateTimeOffset.Now;
+        var bars = new List<UsageBar>();
+
+        UsageBar Projected(UsageBar bar) =>
+            WithProjection(bar, history?.Points(AntigravityHistoryKey(bar.Label)), config, now);
+
+        if (snapshot.Bucket("gemini-5h") is { RemainingPct: { } g5 } b5)
+            bars.Add(Projected(new UsageBar("5h", g5)
+            {
+                ResetsAt = b5.EffectiveResetsAt,
+                WindowDuration = ResetEstimator.FiveHourWindow,
+            }));
+
+        if (snapshot.Bucket("gemini-weekly") is { RemainingPct: { } g7 } b7)
+            bars.Add(Projected(new UsageBar("7d", g7)
+            {
+                ResetsAt = b7.EffectiveResetsAt,
+                WindowDuration = ResetEstimator.SevenDayWindow,
+            }));
+
+        // Third-party model pool (Claude/GPT via Antigravity): keep in diagnostics/tooltip, and
+        // surface on the pill only once it is actually being consumed (< 99.5%).
+        var tp5 = snapshot.Bucket("3p-5h");
+        var tp7 = snapshot.Bucket("3p-weekly");
+        var show3pInPill = (tp5?.RemainingPct is { } p5 && p5 < 99.5)
+            || (tp7?.RemainingPct is { } p7 && p7 < 99.5);
+
+        if (tp5 is { RemainingPct: { } tp5Rem })
+            bars.Add(Projected(new UsageBar("3p 5h", tp5Rem)
+            {
+                ResetsAt = tp5.EffectiveResetsAt,
+                WindowDuration = ResetEstimator.FiveHourWindow,
+                ShowInPill = show3pInPill,
+            }));
+
+        if (tp7 is { RemainingPct: { } tp7Rem })
+            bars.Add(Projected(new UsageBar("3p 7d", tp7Rem)
+            {
+                ResetsAt = tp7.EffectiveResetsAt,
+                WindowDuration = ResetEstimator.SevenDayWindow,
+                ShowInPill = show3pInPill,
+            }));
+
+        // Fall back to any remaining non-disabled buckets if Google renames bucket IDs.
+        if (bars.Count == 0)
+        {
+            foreach (var bucket in snapshot.Buckets.Values.Where(b => !b.Disabled && b.RemainingPct is not null))
+            {
+                var duration = bucket.Id.Contains("5h", StringComparison.OrdinalIgnoreCase)
+                    ? ResetEstimator.FiveHourWindow
+                    : bucket.Id.Contains("week", StringComparison.OrdinalIgnoreCase)
+                        ? ResetEstimator.SevenDayWindow
+                        : (TimeSpan?)null;
+                bars.Add(Projected(new UsageBar(bucket.Id, bucket.RemainingPct)
+                {
+                    ResetsAt = bucket.EffectiveResetsAt,
+                    WindowDuration = duration,
+                }));
+            }
+        }
+
+        var lowest = double.MaxValue;
+        foreach (var bar in bars)
+            if (bar.ShowInPill && bar.RemainingPct is { } r && r < lowest) lowest = r;
+
+        var low = lowest <= config.LowThresholdPct;
+        var stale = now - snapshot.ReadAt > TimeSpan.FromHours(config.ReadingStaleHours);
+        var nextReset = bars.Where(b => b.ResetsAt is not null).Select(b => b.ResetsAt).Min();
+
+        return new UsageModel
+        {
+            Bars = bars,
+            Stale = stale,
+            Warned = low,
+            SourceText = snapshot.PlanTier is { Length: > 0 } tier
+                ? $"agy statusLine · {tier}"
+                : "agy statusLine",
+            ReadingAt = snapshot.ReadAt,
+            StatusText = Describe(bars, stale),
+            ProjectionText = DescribeProjections(bars, now),
+            NextReset = nextReset,
+            ResetBasis = nextReset is null
+                ? "not active (full quota or unreported)"
+                : "reported by Antigravity CLI",
             WarnReason = low
                 ? $"at or below floor of {config.LowThresholdPct:0}%"
                 : $"lowest window at {(lowest is double.MaxValue ? 0 : lowest):0}% remaining",

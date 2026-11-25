@@ -208,8 +208,8 @@ public class TargetCaptureTests
             Window("WindowsTerminal", "CASCADIA_HOSTING_WINDOW_CLASS", "pwsh"),
             TargetDefaults.Create(new Config()), tree, new Config(), OwnPid);
 
-        var provider = Assert.Single(draft.Definition.Providers);
-        Assert.Equal(ProviderId.Claude, provider.Provider);
+        Assert.Contains(draft.Definition.Providers, p => p.Provider == ProviderId.Claude);
+        Assert.Equal(new[] { "claude" }, draft.Definition.ActivityProcessNames);
     }
 
     [Fact]
