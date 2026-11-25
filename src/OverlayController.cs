@@ -119,6 +119,8 @@ internal sealed class OverlayController : IDisposable
     public OverlayController(LifecycleLog? lifecycle = null)
     {
         _lifecycle = lifecycle;
+        _activity = new ActivityLog(
+            ActivityLog.DefaultRoot(), _config.ActivityDayStartHour, AppPaths.ActivityCacheFile);
         _log = _config.WriteDiagnosticsLog
             ? DiagnosticLog.Default
             : new DiagnosticLog(AppPaths.DiagnosticsDir, maxBytes: 0, generations: 0);
@@ -200,6 +202,7 @@ internal sealed class OverlayController : IDisposable
 
         // Pills are created by the first Track(), once the qualifying windows are known.
         Rebuild();
+        BeginActivityScan(force: true);
 
         _trackTimer.Tick += (_, _) => Track();
         _trackTimer.Start();
@@ -214,6 +217,7 @@ internal sealed class OverlayController : IDisposable
             }
             BeginFileRead(force: false);
             BeginScrape(force: false);
+            BeginActivityScan();
             foreach (var pill in _pills.Values) pill.RefreshTime();
         };
         _dataTimer.Start();
@@ -243,7 +247,7 @@ internal sealed class OverlayController : IDisposable
     {
         RecordCodexHistory();
 
-        _claudeModel = UsageModel.Build(_file, _scraped, _history, _config);
+        _claudeModel = UsageModel.Build(_file, _scraped, _history, _config, _activity.Days);
         _codexModel = UsageModel.BuildCodex(
             _codex.Latest, _codex.CodexInstalled, _codex.Error, _config, _barHistory);
 
@@ -253,6 +257,82 @@ internal sealed class OverlayController : IDisposable
         _tray.Update(
             _config.EnableClaude ? _claudeModel : null,
             _config.EnableCodex ? _codexModel : null);
+
+        if (_config.EnableClaude) CheckLowCredit();
+    }
+
+    private readonly LowCreditTrigger _lowCredit = LowCreditTrigger.Load();
+
+    /// <summary>
+    /// When the user was working, from Claude Code's transcripts. The credit spend rate is measured
+    /// over this time only, so idle nights and weekends do not dilute it.
+    /// </summary>
+    private readonly ActivityLog _activity;
+    private bool _activityScanInFlight;
+    private DateTime _lastActivityScanUtc = DateTime.MinValue;
+    private static readonly TimeSpan ActivityScanInterval = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// Re-reads what the transcripts gained, off the UI thread, and rebuilds the models when the
+    /// per-day spans moved. Throttled: it only stats the files when nothing has changed.
+    /// </summary>
+    private void BeginActivityScan(bool force = false)
+    {
+        if (!_config.EnableClaude || _activityScanInFlight) return;
+        if (!force && DateTime.UtcNow - _lastActivityScanUtc < ActivityScanInterval) return;
+
+        _activityScanInFlight = true;
+        _lastActivityScanUtc = DateTime.UtcNow;
+        var dispatcher = Dispatcher.CurrentDispatcher;
+
+        Task.Run(() =>
+        {
+            var started = Stopwatch.StartNew();
+            var changed = false;
+            string? error = null;
+            try { changed = _activity.Refresh(DateTimeOffset.Now); }
+            catch (Exception ex) { error = ex.Message; }
+
+            dispatcher.BeginInvoke(() =>
+            {
+                _activityScanInFlight = false;
+                if (error is not null)
+                {
+                    _log.Record("claude", "activity", "scan", DiagLevel.Warn, "failed", error);
+                    return;
+                }
+                if (!changed) return;
+
+                _log.Record("claude", "activity", "scan", DiagLevel.Info, "updated",
+                    $"{_activity.Days.Count} working days", started.Elapsed.TotalMilliseconds);
+                Rebuild();
+            });
+        });
+    }
+
+    /// <summary>
+    /// Starts the insights hand-off in a new terminal when the credit meter is projected to run
+    /// out soon. The cycle is marked as handled before launching, so a failed launch is logged
+    /// once instead of being retried on every refresh.
+    /// </summary>
+    private void CheckLowCredit()
+    {
+        var decision = LowCreditTrigger.Evaluate(
+            _claudeModel, _config, DateTimeOffset.Now, _lowCredit.FiredCycle);
+        if (!decision.Fire) return;
+
+        _lowCredit.FiredCycle = decision.Cycle;
+        _lowCredit.Save();
+
+        var config = _config;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var started = InsightsLauncher.Launch(config, out var detail);
+            _log.Record("claude", "low-credit", "insights",
+                started ? DiagLevel.Info : DiagLevel.Warn,
+                started ? "started" : "failed",
+                $"{decision.Reason}; {detail}");
+        });
     }
 
     private UsageModel ModelFor(ProviderId provider) =>
@@ -778,7 +858,7 @@ internal sealed class OverlayController : IDisposable
                     _scrapeFailures = 0;
                     _scraped = result;
                     if (result.Windows.Count == 0 && _history.Record(result.UsedPct!.Value, result.MeterLabel, result.MeterDetail,
-                            result.ReadAt ?? DateTimeOffset.Now))
+                            result.ReadAt ?? DateTimeOffset.Now, result.Spend))
                     {
                         _history.Save();
                     }

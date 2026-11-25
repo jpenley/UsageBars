@@ -49,6 +49,36 @@ internal sealed class Config
     public double WarnHoursToEmpty { get; set; } = 2;
 
     /// <summary>
+    /// When the Claude credit/spend meter is projected to run out within
+    /// <see cref="InsightsTriggerHours"/>, open a NEW terminal with its own Claude Code instance
+    /// running /insights (and, if <see cref="RequestUsage"/> is configured, prepare the request
+    /// form). Never touches an existing session. Fires once per billing cycle.
+    /// </summary>
+    public bool InsightsOnLowCredit { get; set; } = true;
+
+    /// <summary>
+    /// Local hour at which a working day begins. The spend rate is measured over the span between
+    /// each day's first and last Claude Code transcript message, so idle nights and weekends
+    /// never dilute it. Work after midnight but before this hour counts toward the previous day.
+    /// </summary>
+    public int ActivityDayStartHour { get; set; } = 6;
+
+    /// <summary>How many of the most recent working days set the credit spend rate.</summary>
+    public int ActivityRateDays { get; set; } = 3;
+
+    /// <summary>
+    /// Predicted hours of USE left (hours of actual work at the measured rate, not wall-clock
+    /// hours) at which the insights run starts. 0 disables it.
+    /// </summary>
+    public double InsightsTriggerHours { get; set; } = 2;
+
+    /// <summary>
+    /// Details for the "request more usage" form. Intended for the local, untracked config only:
+    /// the shipped default leaves every value empty, and nothing here is ever committed.
+    /// </summary>
+    public RequestUsageSettings RequestUsage { get; set; } = new();
+
+    /// <summary>
     /// Safety margin on the measured burn rate. 1.25 assumes you'll consume 25 % faster than
     /// recent history suggests, so the warning lands early rather than late.
     /// </summary>
@@ -266,6 +296,19 @@ internal sealed class Config
             v => CodexRefreshMinutes = v);
         ClampDouble(nameof(LowThresholdPct), LowThresholdPct, 0, 100, v => LowThresholdPct = v);
         ClampDouble(nameof(WarnHoursToEmpty), WarnHoursToEmpty, 0, 720, v => WarnHoursToEmpty = v);
+        ClampDouble(nameof(InsightsTriggerHours), InsightsTriggerHours, 0, 720,
+            v => InsightsTriggerHours = v);
+        ClampInt(nameof(ActivityDayStartHour), ActivityDayStartHour, 0, 23, v => ActivityDayStartHour = v);
+        ClampInt(nameof(ActivityRateDays), ActivityRateDays, 1, 14, v => ActivityRateDays = v);
+
+        RequestUsage ??= new RequestUsageSettings();
+        if (!RequestUsage.HasUsableUrl && !string.IsNullOrWhiteSpace(RequestUsage.Url))
+        {
+            // Only ever hand an https address to the shell; anything else could launch a program.
+            notes.Add($"{nameof(RequestUsage)}.{nameof(RequestUsageSettings.Url)} is not an https address; ignoring it");
+            RequestUsage.Url = "";
+        }
+        RequestUsage.TokenUse ??= new List<string>();
         ClampDouble(nameof(VelocityPaddingFactor), VelocityPaddingFactor, 1, 10,
             v => VelocityPaddingFactor = v);
         ClampDouble(nameof(VelocityWindowHours), VelocityWindowHours, 0.25, 168,

@@ -198,10 +198,13 @@ internal sealed class OverlayView : FrameworkElement
         dc.DrawText(text, new Point(centre.X - text.Width / 2, centre.Y - text.Height / 2));
     }
 
-    private static string PercentText(UsageBar bar) =>
-        bar.RemainingPct is { } r
-            ? Math.Round(r).ToString("0", CultureInfo.InvariantCulture) + "%"
-            : "--";
+    /// <summary>Dollars left on a dollar-based bar, otherwise the remaining percent.</summary>
+    internal static string PercentText(UsageBar bar) =>
+        bar.RemainingUsd is { } usd
+            ? UsageModel.Money(usd)
+            : bar.RemainingPct is { } r
+                ? Math.Round(r).ToString("0", CultureInfo.InvariantCulture) + "%"
+                : "--";
 
     private static FormattedText Text(string text, Brush brush, double dpi) =>
         new(text, CultureInfo.InvariantCulture, System.Windows.FlowDirection.LeftToRight,

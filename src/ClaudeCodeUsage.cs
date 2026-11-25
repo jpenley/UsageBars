@@ -12,6 +12,42 @@ internal sealed record ClaudeUsageWindow(string Label, double UsedPct, string? D
     public TimeSpan? WindowDuration { get; init; }
 }
 
+/// <summary>
+/// Dollars spent against a dollar limit, as the credit/spend meter prints them
+/// ("$285.75 / $350.00 spent"). Carries far more resolution than the meter's whole-number percent:
+/// on a $350 limit one percent is $3.50.
+/// </summary>
+internal readonly record struct SpendAmount(double SpentUsd, double LimitUsd)
+{
+    public double RemainingUsd => Math.Max(0, LimitUsd - SpentUsd);
+
+    /// <summary>Unrounded percent of the limit already spent, 0-100.</summary>
+    public double UsedPct => Math.Clamp(SpentUsd / LimitUsd * 100, 0, 100);
+
+    private static readonly Regex Pattern = new(
+        @"\$\s*([\d,]+(?:\.\d+)?)\s*/\s*\$\s*([\d,]+(?:\.\d+)?)",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    /// <summary>Parses "$spent / $limit" from a meter's secondary line, or null if absent or nonsensical.</summary>
+    public static SpendAmount? Parse(string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail)) return null;
+        var match = Pattern.Match(detail);
+        if (!match.Success) return null;
+
+        static bool TryAmount(string text, out double value) =>
+            double.TryParse(text.Replace(",", ""), System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out value);
+
+        if (!TryAmount(match.Groups[1].Value, out var spent) ||
+            !TryAmount(match.Groups[2].Value, out var limit) ||
+            !double.IsFinite(spent) || !double.IsFinite(limit) || limit <= 0 || spent < 0)
+            return null;
+
+        return new SpendAmount(spent, limit);
+    }
+}
+
 /// <summary>One reading of the Claude Code <c>/usage</c> meter.</summary>
 internal sealed record ClaudeCodeUsage
 {
@@ -34,6 +70,9 @@ internal sealed record ClaudeCodeUsage
     public string? Error { get; init; }
 
     public bool HasValue => UsedPct is not null;
+
+    /// <summary>Exact dollars from <see cref="MeterDetail"/> when the meter is a dollar one.</summary>
+    public SpendAmount? Spend => SpendAmount.Parse(MeterDetail);
 
     /// <summary>
     /// A short bar label derived from whatever the meter currently is. Deliberately

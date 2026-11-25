@@ -17,6 +17,26 @@ internal sealed class UsageSample
     /// <summary>Percent consumed at that moment (0-100).</summary>
     [JsonPropertyName("u")]
     public double UsedPct { get; set; }
+
+    /// <summary>Dollars spent at that moment, when the meter reported dollars.</summary>
+    [JsonPropertyName("d")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SpentUsd { get; set; }
+
+    /// <summary>The dollar limit in force at that moment, paired with <see cref="SpentUsd"/>.</summary>
+    [JsonPropertyName("l")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? LimitUsd { get; set; }
+
+    /// <summary>
+    /// The finest percent this sample supports: spent over limit when dollars were recorded,
+    /// otherwise the whole-number meter percent.
+    /// </summary>
+    [JsonIgnore]
+    public double PreciseUsedPct =>
+        SpentUsd is { } spent && LimitUsd is { } limit && limit > 0
+            ? Math.Clamp(spent / limit * 100, 0, 100)
+            : UsedPct;
 }
 
 /// <summary>
@@ -118,7 +138,8 @@ internal sealed class UsageHistory
     }
 
     /// <summary>Adds a reading, then prunes. Returns true when the sample was kept.</summary>
-    public bool Record(double usedPct, string? label, string? detail, DateTimeOffset at)
+    public bool Record(
+        double usedPct, string? label, string? detail, DateTimeOffset at, SpendAmount? spend = null)
     {
         LastLabel = label ?? LastLabel;
         LastDetail = detail ?? LastDetail;
@@ -126,13 +147,23 @@ internal sealed class UsageHistory
         if (Samples.Count > 0)
         {
             var last = Samples[^1];
-            // Collapse near-duplicates, but always keep a sample that changed the value.
-            if (at - last.At < MinSpacing && Math.Abs(usedPct - last.UsedPct) < 0.5) return false;
+            // Collapse near-duplicates, but always keep a sample that changed the value. Dollars
+            // move in cents, so with them a one-cent change counts; without, half a point does.
+            var unchanged = spend is { } current && last.SpentUsd is { } before
+                ? Math.Abs(current.SpentUsd - before) < 0.005
+                : Math.Abs(usedPct - last.UsedPct) < 0.5;
+            if (at - last.At < MinSpacing && unchanged) return false;
             // Ignore out-of-order readings.
             if (at < last.At) return false;
         }
 
-        Samples.Add(new UsageSample { At = at, UsedPct = usedPct });
+        Samples.Add(new UsageSample
+        {
+            At = at,
+            UsedPct = usedPct,
+            SpentUsd = spend?.SpentUsd,
+            LimitUsd = spend?.LimitUsd,
+        });
 
         var cutoff = DateTimeOffset.Now - MaxAge;
         Samples.RemoveAll(s => s.At < cutoff);
@@ -145,7 +176,7 @@ internal sealed class UsageHistory
     /// projection as the Claude history file and the Codex windows.
     /// </summary>
     public IReadOnlyList<UsagePoint> Points() =>
-        Samples.Select(s => new UsagePoint(s.At, s.UsedPct)).ToList();
+        Samples.Select(s => new UsagePoint(s.At, s.PreciseUsedPct)).ToList();
 
     /// <summary>
     /// Samples since the last observed reset. A reset is detected purely from the data — a drop in
@@ -295,7 +326,7 @@ internal static class UsageVelocity
     /// The tail of the series since the last observed reset. Consumption from the previous window
     /// would otherwise inflate every projection taken just after a reset.
     /// </summary>
-    private static List<UsagePoint> SinceLastReset(IReadOnlyList<UsagePoint> series)
+    internal static List<UsagePoint> SinceLastReset(IReadOnlyList<UsagePoint> series)
     {
         for (var i = series.Count - 1; i > 0; i--)
         {

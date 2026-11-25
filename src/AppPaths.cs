@@ -121,6 +121,18 @@ internal static class AppPaths
     /// </summary>
     public static string ProbeDir => Path.Combine(DataRoot, "probe");
 
+    /// <summary>
+    /// Working directory and generated scripts for the low-credit /insights terminal. Kept apart
+    /// from the user's projects so the fresh Claude instance never starts inside one.
+    /// </summary>
+    public static string InsightsDir => Path.Combine(DataRoot, "insights");
+
+    /// <summary>What was learned from each Claude Code transcript, so a restart need not re-read them.</summary>
+    public static string ActivityCacheFile => Path.Combine(DataRoot, "activity-cache.json");
+
+    /// <summary>Remembers which billing cycle already started the insights hand-off.</summary>
+    public static string LowCreditStateFile => Path.Combine(DataRoot, "low-credit-trigger.json");
+
     /// <summary>Fallback config location, used when the exe directory isn't writable.</summary>
     public static string FallbackConfigFile => Path.Combine(DataRoot, "config.json");
 

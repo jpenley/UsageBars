@@ -41,3 +41,6 @@ id_ed25519
 
 # Project-local worktrees
 .worktrees/
+
+# Browser-automation scratch output
+.playwright-mcp/

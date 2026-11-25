@@ -40,6 +40,29 @@ internal sealed record UsageBar(string Label, double? RemainingPct)
 
     /// <summary>Measured burn rate behind <see cref="EmptyAt"/>, in points per hour.</summary>
     public double? PercentPerHour { get; init; }
+
+    /// <summary>
+    /// Hours of actual use left at the measured active rate, when the rate was measured over the
+    /// user's working time rather than the wall clock. Null otherwise.
+    /// </summary>
+    public double? ActiveHoursLeft { get; init; }
+
+    /// <summary>Typical spend per working day, in percent of the limit, when measured.</summary>
+    public double? PercentPerDay { get; init; }
+
+    /// <summary>
+    /// Exact dollars behind this bar, when it is a credit or spend meter that reported them.
+    /// Null for percent-only windows such as 5h and 7d.
+    /// </summary>
+    public SpendAmount? Spend { get; init; }
+
+    /// <summary>Dollars left, or null when this bar is not dollar-based.</summary>
+    public double? RemainingUsd => Spend?.RemainingUsd;
+
+    /// <summary><see cref="PercentPerHour"/> expressed in dollars, for a dollar-based bar.</summary>
+    public double? UsdPerHour => PercentPerHour is { } rate && Spend is { } spend
+        ? rate / 100 * spend.LimitUsd
+        : null;
 }
 
 /// <summary>
@@ -105,7 +128,8 @@ internal sealed record UsageModel
         UsageSnapshot file,
         ClaudeCodeUsage? scraped,
         UsageHistory history,
-        Config config)
+        Config config,
+        IReadOnlyList<ActiveDay>? activity = null)
     {
         var buildNow = DateTimeOffset.Now;
 
@@ -198,7 +222,12 @@ internal sealed record UsageModel
         if (scraped is { HasValue: true })
         {
             var now = buildNow;
-            var remaining = scraped.RemainingPct!.Value;
+
+            // Dollars, when the meter prints them, are exact; its percent is a whole number and
+            // one point is $3.50 on a $350 limit. Everything downstream (pill, pace, projection)
+            // runs from the exact figure so the bar moves with every dollar spent.
+            var spend = scraped.Spend;
+            var remaining = spend is { } exact ? 100 - exact.UsedPct : scraped.RemainingPct!.Value;
 
             // There is no sample history behind the scrape, so the meter's own secondary line is
             // the only place a reset or expiry can come from.
@@ -211,15 +240,21 @@ internal sealed record UsageModel
             var (monthEnd, monthLength) = MonthWindow(now);
             TimeSpan? window = monthly ? monthLength : null;
             if (monthly && (scrapedReset is null || scrapedReset <= now)) scrapedReset = monthEnd;
+            var creditBar = new UsageBar(scraped.ShortLabel, remaining)
+            {
+                ResetsAt = scrapedReset,
+                WindowDuration = window,
+                Spend = spend,
+            };
+
+            // When the caller knows when the user was working, the rate is measured over that
+            // time only: an idle night or weekend must not dilute it. Without that knowledge,
+            // fall back to the plain wall-clock projection every other bar uses.
             var bars = new List<UsageBar>
             {
-                WithProjection(
-                    new UsageBar(scraped.ShortLabel, remaining)
-                    {
-                        ResetsAt = scrapedReset,
-                        WindowDuration = window,
-                    },
-                    history.Points(), config, now),
+                activity is null
+                    ? WithProjection(creditBar, history.Points(), config, now)
+                    : WithActiveProjection(creditBar, history.Points(), activity, config, now),
             };
 
             // The scrape is only as fresh as its last successful run.
@@ -414,6 +449,27 @@ internal sealed record UsageModel
     }
 
     /// <summary>
+    /// Attaches a projection measured over the user's active time. Leaves the bar without one
+    /// when there is no usable activity, rather than falling back to a diluted wall-clock rate.
+    /// </summary>
+    private static UsageBar WithActiveProjection(
+        UsageBar bar, IReadOnlyList<UsagePoint> series, IReadOnlyList<ActiveDay> activity,
+        Config config, DateTimeOffset now)
+    {
+        if (bar.RemainingPct is not { } remaining) return bar;
+        if (ActiveRate.Compute(activity, series, remaining, config, now) is not { } projection)
+            return bar;
+
+        return bar with
+        {
+            EmptyAt = projection.EmptyAt,
+            PercentPerHour = projection.PercentPerActiveHour,
+            PercentPerDay = projection.PercentPerActiveDay,
+            ActiveHoursLeft = projection.ActiveHoursLeft,
+        };
+    }
+
+    /// <summary>
     /// Per-bar projected time to 0 %, for diagnostics. Silent for bars with too little history.
     /// </summary>
     private static string DescribeProjections(IReadOnlyList<UsageBar> bars, DateTimeOffset now)
@@ -436,10 +492,14 @@ internal sealed record UsageModel
         foreach (var bar in Bars)
         {
             if (!bar.ShowInPill) continue;
+            if (bar.Spend is { } spend)
+                lines.Add($"{bar.Label} {Money(spend.RemainingUsd)} of {Money(spend.LimitUsd)} left");
             if (!string.IsNullOrWhiteSpace(bar.ReportedResetText))
                 lines.Add($"{bar.Label} {bar.ReportedResetText}");
             else if (bar.ResetsAt is { } reset)
                 lines.Add($"{bar.Label} resets {ResetEstimator.Describe(reset, now)}");
+            if (bar.Spend is not null)
+                lines.Add($"{bar.Label} {DepletionText(bar, now)}");
         }
         if (ReadingAt is { } readingAt)
         {
@@ -452,6 +512,41 @@ internal sealed record UsageModel
             lines.Add($"Reading age: {text}");
         }
         return lines.Count == 0 ? null : string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>Whole dollars from ten up, cents below, so a nearly empty pill still reads precisely.</summary>
+    internal static string Money(double usd) =>
+        usd >= 10
+            ? "$" + Math.Round(usd).ToString("#,0", System.Globalization.CultureInfo.InvariantCulture)
+            : "$" + usd.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>
+    /// Where the current rate of spending runs out relative to the reset: the sentence the dollar
+    /// bar exists to answer. Says "no projection" rather than guessing when the rate is unknown.
+    /// </summary>
+    internal static string DepletionText(UsageBar bar, DateTimeOffset now)
+    {
+        if (bar.EmptyAt is not { } empty || bar.UsdPerHour is not { } rate)
+            return "no spend rate yet";
+
+        string pace;
+        if (bar.ActiveHoursLeft is { } useLeft && bar.Spend is { } spend && bar.PercentPerDay is { } perDay)
+        {
+            // Measured over working time: say so, because "per hour" alone reads as wall clock.
+            pace = $"at {Money(rate)}/h of use (~{Money(perDay / 100 * spend.LimitUsd)}/day), " +
+                   $"{useLeft:0.#}h of use left, lasts until {ResetEstimator.Describe(empty, now)}";
+        }
+        else
+        {
+            pace = $"at {Money(rate)}/h lasts until {ResetEstimator.Describe(empty, now)}";
+        }
+        if (bar.ResetsAt is not { } reset) return pace;
+
+        var gap = reset - empty;
+        if (gap <= TimeSpan.Zero) return pace + ", past the reset";
+        return gap.TotalHours >= 48
+            ? $"{pace}, {gap.TotalDays:0.#} days before the reset"
+            : $"{pace}, {gap.TotalHours:0.#}h before the reset";
     }
 
     public UsageModel ForPill() => this with { Bars = Bars.Where(bar => bar.ShowInPill).ToArray() };

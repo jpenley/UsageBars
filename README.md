@@ -206,6 +206,29 @@ Single-meter scrape readings can be restored from persisted history.
 Multi-window CLI readings are retained in memory rather than persisted through that cache.
 Reset text is parsed when possible; missing or unparseable timing stays unknown.
 
+**Credit and spend meters are dollar-based.** The `/usage` line `$285.75 / $350.00 spent` is kept to the cent,
+so the pill shows dollars left (`$64`) rather than a whole-number percent, and the burn rate is measured in dollars per hour.
+Hover shows dollars left and where the current rate of spending runs out relative to the reset,
+for example `at $4.92/h of use (~$37/day), 11h of use left, lasts until Thu 26 Nov 12:24, 4.5 days before the reset`.
+Older percent-only history still loads, and bars without dollars keep showing a percent.
+
+**The spend rate counts working time, not the clock.** UsageBars reads the timestamps in Claude Code's session transcripts
+(`~/.claude/projects`, or under `CLAUDE_CONFIG_DIR`). A working day starts at `ActivityDayStartHour` (default 6am local)
+and runs from its first to its last message, so nights, weekends and long gaps between days never dilute the rate.
+Spend is attributed over only the stretch the meter was actually read, the most recent `ActivityRateDays` working days
+(default 3) set the rate, and the projected empty day skips weekends.
+Transcripts are read incrementally and cached in the data folder.
+With no transcripts there is no projection; it does not fall back to a diluted wall-clock rate.
+A session left running overnight counts as activity, so a day with an all-night loop will read as a long day with a low rate.
+
+**Low credit starts an insights run.** When the credit/spend bar is projected to have `InsightsTriggerHours`
+(default 2) of **use** left, and to empty before its reset, UsageBars opens a **new terminal window** with its own Claude Code instance running `/insights`.
+It never types into, attaches to, or reuses an existing session, and it fires once per billing cycle.
+If `RequestUsage.Url` is set in your local config, a second new Claude Code instance then opens that form with Playwright
+and fills it from the `/insights` report and your `RequestUsage` answers.
+**It never submits the form.** If the browser is signed out, it asks you to sign in and waits.
+Keep `RequestUsage` values in your untracked `UsageBars.config.json`; the shipped default leaves them empty.
+
 ### Codex
 
 UsageBars starts `codex app-server` as a hidden child process and communicates over stdio using JSON-RPC:
@@ -222,7 +245,7 @@ The monitor reconnects with backoff and keeps the last successful snapshot acros
 Primary and secondary account windows become bars, along with a spend allowance when reported.
 Reset deadlines and durations come from the response when present; they are not guaranteed fields.
 Per-model buckets and reset-credit counts remain metadata, not buttons for redeeming allowance.
-UsageBars has no request-credit or request-reset action.
+UsageBars has no Codex request-credit or request-reset action.
 
 ## Configuration
 
@@ -242,6 +265,11 @@ Comments and trailing commas are accepted. Invalid numeric values are clamped; *
 | `ScrapeIntervalMinutes` | `15` | Claude CLI refresh interval; repeated failures back off. |
 | `FileStaleMinutes` | `15` | Age at which a Desktop-history sample is stale. |
 | `ReadingStaleHours` | `2` | Age at which a CLI or app-server reading is stale. |
+| `InsightsOnLowCredit` | `true` | Open a new terminal running `/insights` when the Claude credit/spend meter is nearly empty. |
+| `InsightsTriggerHours` | `2` | Predicted hours of use left (working time at the measured rate) that start the insights run. `0` disables it. |
+| `ActivityDayStartHour` | `6` | Local hour a working day begins for the spend rate. |
+| `ActivityRateDays` | `3` | Most recent working days that set the spend rate. |
+| `RequestUsage` | empty | `Url`, `ModelChoice`, `TokenUse` and `ExtraNotes` for the request form. Local config only; never submitted for you. |
 | `AlwaysOn` | `true` | Keep pills visible when their hosts are not focused. |
 | `PlacementMode` | `"auto"` | Attachment strategy: `auto`, `zorder`, or `topmost`. This is not the target's anchor. |
 | `HideWhenCovered` | `true` | Hide covered pills when explicit topmost-fallback checks apply. |
@@ -279,7 +307,7 @@ See the default config for their full regular expressions.
 | `ResetDayOfWeek` | `"Friday"` | Fallback weekday, labeled as not measured. |
 | `ResetHour` | `0` | Local fallback hour. Does not supply a measured reset pointer. |
 
-Legacy global placement keys, credit-action URLs, and absolute color thresholds are ignored.
+Legacy global placement keys, old credit-action URLs, and absolute color thresholds are ignored.
 Per-target placement and activation live in `targets.json`.
 
 </details>

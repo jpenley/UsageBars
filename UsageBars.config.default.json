@@ -51,6 +51,47 @@
   // burn rate says there's plenty of time (e.g. you've stopped for the day).
   "LowThresholdPct": 10,
 
+  // --- Low credit: insights run -----------------------------------------------
+
+  // On a dollar-based Claude credit/spend meter the pill shows dollars left, and
+  // the tooltip projects where the current rate of spending runs out relative to
+  // the reset.
+  //
+  // The rate is measured over the time you were actually working, never the wall
+  // clock. Each working day runs from its first to its last Claude Code
+  // transcript message (read from ~/.claude/projects), beginning at
+  // ActivityDayStartHour local, so idle nights and weekends cannot dilute it. The
+  // most recent ActivityRateDays working days set the rate. The projected empty
+  // day walks weekdays only. With no transcripts there is no projection.
+  "ActivityDayStartHour": 6,
+  "ActivityRateDays": 3,
+
+  // When the projection reaches InsightsTriggerHours of USE left (hours of work at
+  // that rate, not clock hours) and it would empty before the reset, UsageBars
+  // opens a NEW terminal window running its own Claude Code instance with
+  // /insights. It never touches an existing session, and fires once per billing
+  // cycle. Set InsightsTriggerHours to 0, or InsightsOnLowCredit to false, to turn
+  // it off.
+  "InsightsOnLowCredit": true,
+  "InsightsTriggerHours": 2,
+
+  // Optional: also prepare the "request more usage" form. Leave Url empty to skip
+  // it. Put real values in your LOCAL UsageBars.config.json only, never in a file
+  // that is committed. When Url is set, a second new Claude Code instance opens
+  // the form with Playwright and fills it in from the /insights report and the
+  // answers below. It never submits: you review the form and submit it yourself.
+  "RequestUsage": {
+    // https address of the request form.
+    "Url": "",
+    // Standing answer to "how are you choosing which models for which tasks".
+    "ModelChoice": "",
+    // Which use-of-tokens boxes to tick: "3a", "3b", "3c" and/or "3d". Ticking one
+    // is an attestation, so none are ticked unless you list them here.
+    "TokenUse": [],
+    // Optional text for the final "anything else" field.
+    "ExtraNotes": ""
+  },
+
   // --- Burn-rate measurement --------------------------------------------------
 
   // How far back to look when measuring the current rate.
